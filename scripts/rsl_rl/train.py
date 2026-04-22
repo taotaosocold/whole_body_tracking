@@ -24,7 +24,8 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--registry_name", type=str, required=True, help="The name of the wand registry.")
+parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
+parser.add_argument("--motion_file", type=str, default=None, help="Path to a local motion .npz file (use instead of --registry_name to avoid wandb).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -58,8 +59,10 @@ from isaaclab.envs import (
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_pickle, dump_yaml
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from isaaclab.utils.io import dump_yaml
+import pickle
+import importlib.metadata as metadata
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
@@ -83,22 +86,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
 
+    # handle deprecated configurations for rsl-rl >= 4.0.0
+    installed_version = metadata.version("rsl-rl-lib")
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
+
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # load the motion file from the wandb registry
-    registry_name = args_cli.registry_name
-    if ":" not in registry_name:  # Check if the registry name includes alias, if not, append ":latest"
-        registry_name += ":latest"
-    import pathlib
+    # load the motion file: either from a local path or from wandb registry
+    if args_cli.motion_file is not None:
+        import pathlib
 
-    import wandb
+        motion_path = pathlib.Path(args_cli.motion_file).resolve()
+        if not motion_path.exists():
+            raise FileNotFoundError(f"Motion file not found: {motion_path}")
+        env_cfg.commands.motion.motion_file = str(motion_path)
+        registry_name = None
+    elif args_cli.registry_name is not None:
+        registry_name = args_cli.registry_name
+        if ":" not in registry_name:
+            registry_name += ":latest"
+        import pathlib
 
-    api = wandb.Api()
-    artifact = api.artifact(registry_name)
-    env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
+        import wandb
+
+        api = wandb.Api()
+        artifact = api.artifact(registry_name)
+        env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
+    else:
+        raise ValueError("Either --motion_file or --registry_name must be provided.")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -148,8 +166,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
-    dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
-    dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+    env_pkl_path = os.path.join(log_dir, "params", "env.pkl")
+    os.makedirs(os.path.dirname(env_pkl_path), exist_ok=True)
+    with open(env_pkl_path, "wb") as f:
+        pickle.dump(env_cfg, f)
+
+    agent_pkl_path = os.path.join(log_dir, "params", "agent.pkl")
+    with open(agent_pkl_path, "wb") as f:
+        pickle.dump(agent_cfg, f)
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
