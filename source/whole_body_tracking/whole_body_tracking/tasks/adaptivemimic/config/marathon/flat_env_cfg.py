@@ -25,6 +25,8 @@ class MARATHONFlatEnvCfg(TrackingEnvCfg):
             "left_elbow_pitch_link",
             "right_shoulder_roll_link",
             "right_elbow_pitch_link",
+            "left_wrist_yaw_link",
+            "right_wrist_yaw_link",
         ]
 
 

@@ -9,13 +9,14 @@ from whole_body_tracking.assets import ASSET_DIR
 
 # fmt: off
 # Armature values per joint group
-ARMATURE_LEG_PITCH = 0.06999046   # leg_pelvic_pitch, leg_knee_pitch
-ARMATURE_LEG_ROLL  = 0.06999046   # leg_pelvic_roll
-ARMATURE_LEG_YAW   = 0.03959369   # leg_pelvic_yaw
-ARMATURE_ANKLE     = 0.03959369   # ankle_pitch, ankle_roll
+ARMATURE_LEG_PITCH = 0.1989722    # leg_pelvic_pitch, leg_knee_pitch
+ARMATURE_LEG_ROLL  = 0.277224     # leg_pelvic_roll
+ARMATURE_LEG_YAW   = 0.06117      # leg_pelvic_yaw
+ARMATURE_ANKLE     = 0.03298      # ankle_pitch, ankle_roll
 
 ARMATURE_ARM_PITCH = 0.03298028   # shoulder_pitch, elbow_pitch
 ARMATURE_ARM_ROLL  = 0.03298028   # shoulder_roll
+ARMATURE_WRIST_YAW = 0.01         # wrist_yaw
 
 NATURAL_FREQ   = 10 * 2.0 * 3.1415926535  # 10 Hz
 DAMPING_RATIO  = 2.0
@@ -59,6 +60,7 @@ MARATHON_001_CYLINDER_CFG = ArticulationCfg(
             "left_shoulder_roll_joint":   0.0,
             "right_shoulder_roll_joint":  0.0,
             ".*_elbow_pitch_joint":       -0.5,
+            ".*_wrist_yaw_joint":         0.0,
         },
         joint_vel={".*": 0.0},
     ),
@@ -72,12 +74,17 @@ MARATHON_001_CYLINDER_CFG = ArticulationCfg(
                 ".*_leg_knee_pitch_joint",
             ],
             effort_limit_sim={
-                ".*_leg_pelvic_pitch_joint": 150.0,
-                ".*_leg_pelvic_roll_joint":  150.0,
-                ".*_leg_pelvic_yaw_joint":    60.0,
-                ".*_leg_knee_pitch_joint":   150.0,
+                ".*_leg_pelvic_pitch_joint": 255.0,
+                ".*_leg_pelvic_roll_joint":  212.0,
+                ".*_leg_pelvic_yaw_joint":   110.0,
+                ".*_leg_knee_pitch_joint":   212.0,
             },
-            velocity_limit_sim=14.0,
+            velocity_limit_sim={
+                ".*_leg_pelvic_pitch_joint": 13.72,
+                ".*_leg_pelvic_roll_joint":   6.28,
+                ".*_leg_pelvic_yaw_joint":   15.18,
+                ".*_leg_knee_pitch_joint":    6.28,
+            },
             stiffness={
                 ".*_leg_pelvic_pitch_joint": _stiffness(ARMATURE_LEG_PITCH),
                 ".*_leg_pelvic_roll_joint":  _stiffness(ARMATURE_LEG_ROLL),
@@ -102,8 +109,8 @@ MARATHON_001_CYLINDER_CFG = ArticulationCfg(
                 ".*_leg_ankle_pitch_joint",
                 ".*_leg_ankle_roll_joint",
             ],
-            effort_limit_sim=60.0,
-            velocity_limit_sim=14.0,
+            effort_limit_sim=72.0,
+            velocity_limit_sim=12.15,
             stiffness=_stiffness(ARMATURE_ANKLE),
             damping=_damping(ARMATURE_ANKLE),
             armature=ARMATURE_ANKLE,
@@ -113,30 +120,32 @@ MARATHON_001_CYLINDER_CFG = ArticulationCfg(
                 ".*_shoulder_pitch_joint",
                 ".*_shoulder_roll_joint",
                 ".*_elbow_pitch_joint",
+                ".*_wrist_yaw_joint",
             ],
             effort_limit_sim={
-                ".*_shoulder_pitch_joint": 75.0,
-                ".*_shoulder_roll_joint":  75.0,
-                ".*_elbow_pitch_joint":    75.0,
+                ".*_shoulder_pitch_joint": 72.0,
+                ".*_shoulder_roll_joint":  72.0,
+                ".*_elbow_pitch_joint":    72.0,
+                ".*_wrist_yaw_joint":      36.0,
             },
-            velocity_limit_sim={
-                ".*_shoulder_pitch_joint": 12.2,
-                ".*_elbow_pitch_joint":    12.2,
-            },
+            velocity_limit_sim=12.15,
             stiffness={
                 ".*_shoulder_pitch_joint": _stiffness(ARMATURE_ARM_PITCH),
                 ".*_shoulder_roll_joint":  _stiffness(ARMATURE_ARM_ROLL),
                 ".*_elbow_pitch_joint":    _stiffness(ARMATURE_ARM_PITCH),
+                ".*_wrist_yaw_joint":      _stiffness(ARMATURE_WRIST_YAW),
             },
             damping={
                 ".*_shoulder_pitch_joint": _damping(ARMATURE_ARM_PITCH),
                 ".*_shoulder_roll_joint":  _damping(ARMATURE_ARM_ROLL),
                 ".*_elbow_pitch_joint":    _damping(ARMATURE_ARM_PITCH),
+                ".*_wrist_yaw_joint":      _damping(ARMATURE_WRIST_YAW),
             },
             armature={
                 ".*_shoulder_pitch_joint": ARMATURE_ARM_PITCH,
                 ".*_shoulder_roll_joint":  ARMATURE_ARM_ROLL,
                 ".*_elbow_pitch_joint":    ARMATURE_ARM_PITCH,
+                ".*_wrist_yaw_joint":      ARMATURE_WRIST_YAW,
             },
         ),
     },
