@@ -98,13 +98,12 @@ def attach_onnx_metadata(env: ManagerBasedRLEnv, run_path: str, path: str, filen
             term_cfg = env.observation_manager.cfg.policy.to_dict()[name]
             history_length = term_cfg["history_length"]
             observation_history_lengths.append(1 if history_length == 0 else history_length)
-
     metadata = {
         "run_path": run_path,
         "joint_names": env.scene["robot"].data.joint_names,
         "joint_stiffness": env.scene["robot"].data.joint_stiffness[0].cpu().tolist(),
         "joint_damping": env.scene["robot"].data.joint_damping[0].cpu().tolist(),
-        "default_joint_pos": env.scene["robot"].data.default_joint_pos_nominal.cpu().tolist(),
+        "default_joint_pos": getattr(env.scene["robot"].data, "default_joint_pos_nominal", env.scene["robot"].data.default_joint_pos[0]).cpu().tolist(),
         "command_names": env.command_manager.active_terms,
         "observation_names": observation_names,
         "observation_history_lengths": observation_history_lengths,

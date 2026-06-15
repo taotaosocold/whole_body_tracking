@@ -14,6 +14,8 @@ ARMATURE_ANKLE     = 0.03959369   # ankle_pitch, ankle_roll
 ARMATURE_ARM_PITCH = 0.03298028   # shoulder_pitch, elbow_pitch
 ARMATURE_ARM_ROLL  = 0.03298028   # shoulder_roll
 ARMATURE_ARM_YAW   = 0.02452611   # shoulder_yaw, wrist_yaw
+ARMATURE_WAIST_YAW = 0.06999046
+ARMATURE_HEAD = 0.03298028
 
 NATURAL_FREQ   = 10 * 2.0 * 3.1415926535  # 10 Hz
 DAMPING_RATIO  = 2.0
@@ -46,7 +48,7 @@ CASBOT_02_25DOF_CYLINDER_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.865),
+        pos=(0.0, 0.0, 0.875),
         joint_pos={
             ".*_leg_pelvic_pitch_joint": -0.1,
             ".*_leg_knee_pitch_joint":    0.5,
@@ -110,9 +112,9 @@ CASBOT_02_25DOF_CYLINDER_CFG = ArticulationCfg(
             joint_names_expr=["waist_yaw_joint"],
             effort_limit_sim=60.0,
             velocity_limit_sim=14.0,
-            stiffness=_stiffness(ARMATURE_LEG_PITCH),
-            damping=_damping(ARMATURE_LEG_PITCH),
-            armature=ARMATURE_LEG_PITCH,
+            stiffness=_stiffness(ARMATURE_WAIST_YAW),
+            damping=_damping(ARMATURE_WAIST_YAW),
+            armature=ARMATURE_WAIST_YAW,
         ),
         "arms": ImplicitActuatorCfg(
             joint_names_expr=[
@@ -157,6 +159,17 @@ CASBOT_02_25DOF_CYLINDER_CFG = ArticulationCfg(
                 ".*_elbow_pitch_joint":    ARMATURE_ARM_PITCH,
                 ".*_wrist_yaw_joint":      ARMATURE_ARM_YAW,
             },
+        ),
+        "head": ImplicitActuatorCfg(
+            joint_names_expr=[
+                "head_yaw_joint",
+                "head_pitch_joint",
+            ],
+            effort_limit_sim=36.0,
+            velocity_limit_sim=9.3,
+            stiffness=0.0,
+            damping=0.0,
+            armature=ARMATURE_HEAD,
         ),
     },
 )

@@ -81,3 +81,15 @@ def motion_anchor_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor
     )
     mat = matrix_from_quat(ori)
     return mat[..., :2].reshape(mat.shape[0], -1)
+
+
+def prop_history(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Flattened proprioceptive history buffer [num_envs, K * 90]."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.prop_history.flatten(1)
+
+
+def command_window(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Flattened command window [num_envs, (2L+1) * 50]."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.command_window.flatten(1)

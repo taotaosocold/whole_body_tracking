@@ -62,6 +62,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
 from whole_body_tracking.utils.my_on_policy_runner import _PolicyCompat
+from whole_body_tracking.utils.fast_sac.fast_sac_runner import FastSacRunner
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -149,16 +150,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env)
 
     # load previously trained model
-    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    ppo_runner.load(resume_path)
-
-    # obtain the trained policy for inference
-    policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
+    if agent_cfg.class_name == "FastSacRunner":
+        sac_runner = FastSacRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        sac_runner.load(resume_path)
+        policy = sac_runner.get_inference_policy(device=env.unwrapped.device)
+    else:
+        ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        ppo_runner.load(resume_path)
+        policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
     # export policy to onnx
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
 
-    if hasattr(ppo_runner.alg, "policy"):
+    if agent_cfg.class_name == "FastSacRunner":
+        policy_obj = sac_runner.actor
+        normalizer = sac_runner.obs_normalizer if sac_runner.obs_normalization else None
+    elif hasattr(ppo_runner.alg, "policy"):
         policy_obj = ppo_runner.alg.policy
         normalizer = getattr(ppo_runner, "obs_normalizer", None)
     else:

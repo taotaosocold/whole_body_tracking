@@ -26,6 +26,8 @@ parser.add_argument("--seed", type=int, default=None, help="Seed used for the en
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to a local motion .npz file (use instead of --registry_name to avoid wandb).")
+parser.add_argument("--motion_folder", type=str, default=None, help="Path to a folder of motion .npz files for multi-motion training.")
+parser.add_argument("--teacher_onnx", type=str, default=None, help="Path to teacher ONNX model for distillation PPO reward.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -68,7 +70,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
-from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
+from whole_body_tracking.utils.my_on_policy_runner import MotionDistillationRunner, MotionOnPolicyRunner
+from whole_body_tracking.utils.fast_sac.fast_sac_runner import FastSacRunner
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -95,8 +98,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # load the motion file: either from a local path or from wandb registry
-    if args_cli.motion_file is not None:
+    # load the motion file(s): from local path, folder, or wandb registry
+    if args_cli.motion_folder is not None:
+        import pathlib
+
+        folder_path = pathlib.Path(args_cli.motion_folder).resolve()
+        if not folder_path.is_dir():
+            raise NotADirectoryError(f"Motion folder not found: {folder_path}")
+        env_cfg.commands.motion.motion_folder = str(folder_path)
+        registry_name = None
+    elif args_cli.motion_file is not None:
         import pathlib
 
         motion_path = pathlib.Path(args_cli.motion_file).resolve()
@@ -116,7 +127,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         artifact = api.artifact(registry_name)
         env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
     else:
-        raise ValueError("Either --motion_file or --registry_name must be provided.")
+        raise ValueError("One of --motion_folder, --motion_file, or --registry_name must be provided.")
+
+    # set teacher ONNX path for distillation PPO reward
+    if args_cli.teacher_onnx is not None:
+        env_cfg.teacher_onnx_path = args_cli.teacher_onnx
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -149,19 +164,36 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
-    # create runner from rsl-rl
-    runner = OnPolicyRunner(
+    # create runner from rsl-rl — select class based on agent config
+    if agent_cfg.class_name == "DistillationRunner":
+        runner_cls = MotionDistillationRunner
+    elif agent_cfg.class_name == "FastSacRunner":
+        runner_cls = FastSacRunner
+    else:
+        runner_cls = MotionOnPolicyRunner
+    runner = runner_cls(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
     )
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # save resume path before creating a new log_dir
-    if agent_cfg.resume:
-        # get path to previous checkpoint
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+    # For Distillation runner, --load_run ALWAYS loads the teacher checkpoint
+    # (even without --resume, since it's the teacher source, not a training resume).
+    # For standard PPO runner, --load_run only takes effect with --resume True.
+    if agent_cfg.resume or (
+        agent_cfg.class_name == "DistillationRunner" and agent_cfg.load_run is not None
+    ):
+        load_path = agent_cfg.load_run
+        if os.path.isfile(load_path):
+            resume_path = load_path
+        else:
+            resume_path = get_checkpoint_path(log_root_path, load_path, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-        # load previously trained model
-        runner.load(resume_path)
+        # load previously trained model / teacher
+        # For Distillation: use strict=False because the actor checkpoint
+        # contains distribution keys that the deterministic teacher lacks.
+        strict = False if agent_cfg.class_name == "DistillationRunner" else True
+        runner.load(resume_path, strict=strict)
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)

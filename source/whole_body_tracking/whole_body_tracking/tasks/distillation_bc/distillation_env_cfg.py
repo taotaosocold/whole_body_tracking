@@ -15,13 +15,10 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 
-##
-# Pre-defined configs
-##
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-import whole_body_tracking.tasks.adaptivemimic.mdp as mdp
+import whole_body_tracking.tasks.distillation_bc.mdp as mdp
 
 ##
 # Scene definition
@@ -36,20 +33,11 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
-AGGRESSIVE_VELOCITY_RANGE = {
-    "x": (-0.75, 0.75),
-    "y": (-0.75, 0.75),
-    "z": (-0.3, 0.3),
-    "roll": (-0.78, 0.78),
-    "pitch": (-0.78, 0.78),
-    "yaw": (-1.17, 1.17),
-}
 
 @configclass
-class MySceneCfg(InteractiveSceneCfg):
+class DistillationSceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a legged robot."""
 
-    # ground terrain
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -65,9 +53,7 @@ class MySceneCfg(InteractiveSceneCfg):
             project_uvw=True,
         ),
     )
-    # robots
     robot: ArticulationCfg = MISSING
-    # lights
     light = AssetBaseCfg(
         prim_path="/World/light",
         spawn=sim_utils.DistantLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
@@ -77,7 +63,8 @@ class MySceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.13, 0.13, 0.13), intensity=1000.0),
     )
     contact_forces = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
+        prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True,
+        force_threshold=10.0, debug_vis=True
     )
 
 
@@ -87,7 +74,7 @@ class MySceneCfg(InteractiveSceneCfg):
 
 
 @configclass
-class CommandsCfg:
+class DistillationCommandsCfg:
     """Command specifications for the MDP."""
 
     motion = mdp.MotionCommandCfg(
@@ -108,27 +95,32 @@ class CommandsCfg:
 
 
 @configclass
-class ActionsCfg:
+class DistillationActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], use_default_offset=True)
-    # joint_pos = mdp.MotionResidualActionCfg(asset_name="robot", joint_names=[".*"])
+    joint_pos = mdp.MotionResidualActionCfg(asset_name="robot", joint_names=[".*"])
+
 
 @configclass
-class ObservationsCfg:
-    """Observation specifications for the MDP."""
+class DistillationObservationsCfg:
+    """Observation groups for distillation.
+
+    ``policy`` → student input (proprioceptive, deployable).
+    ``critic``  → teacher input (privileged, only needed during distillation).
+    """
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Observations for policy group."""
+        """Proprioceptive observations — student input."""
 
-        # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         motion_anchor_pos_b = ObsTerm(
-            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"},
+            noise=Unoise(n_min=-0.25, n_max=0.25)
         )
         motion_anchor_ori_b = ObsTerm(
-            func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
+            func=mdp.motion_anchor_ori_b, params={"command_name": "motion"},
+            noise=Unoise(n_min=-0.05, n_max=0.05)
         )
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
@@ -142,6 +134,8 @@ class ObservationsCfg:
 
     @configclass
     class PrivilegedCfg(ObsGroup):
+        """Privileged observations — teacher input (never deployed)."""
+
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         motion_anchor_pos_b = ObsTerm(func=mdp.motion_anchor_pos_b, params={"command_name": "motion"})
         motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"})
@@ -153,38 +147,14 @@ class ObservationsCfg:
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
 
-    # observation groups
     policy: PolicyCfg = PolicyCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
 
 
 @configclass
-class RGMTPolicyCfg(ObsGroup):
-    """Policy observations matching the RGMT paper.
-
-    Current proprio (90) + prop_history (K*90) + command_window ((2L+1)*50).
-    No ``generated_commands`` term --- the command_window centre frame subsumes it.
-    """
-
-    motion_anchor_pos_b = ObsTerm(func=mdp.motion_anchor_pos_b, params={"command_name": "motion"})
-    motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"})
-    base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-    base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
-    joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-    joint_vel = ObsTerm(func=mdp.joint_vel_rel)
-    actions = ObsTerm(func=mdp.last_action)
-    prop_history = ObsTerm(func=mdp.prop_history, params={"command_name": "motion"})
-    command_window = ObsTerm(func=mdp.command_window, params={"command_name": "motion"})
-
-    def __post_init__(self):
-        self.concatenate_terms = True
-
-
-@configclass
-class EventCfg:
+class DistillationEventCfg:
     """Configuration for events."""
 
-    # startup
     physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
@@ -211,13 +181,11 @@ class EventCfg:
         func=mdp.randomize_rigid_body_com,
         mode="startup",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="waist_yaw_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
             "com_range": {"x": (-0.025, 0.025), "y": (-0.05, 0.05), "z": (-0.05, 0.05)},
         },
     )
 
-
-    # interval
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
@@ -227,62 +195,19 @@ class EventCfg:
 
 
 @configclass
-class RewardsCfg:
-    """Reward terms for the MDP."""
+class DistillationRewardsCfg:
+    """Minimal reward terms — not used for BC training, but required by the env framework."""
 
-    motion_global_anchor_pos = RewTerm(
-        func=mdp.motion_global_anchor_position_error_exp,
-        weight=0.5,
-        params={"command_name": "motion", "std": 0.3},
-    )
-    motion_global_anchor_ori = RewTerm(
-        func=mdp.motion_global_anchor_orientation_error_exp,
-        weight=0.5,
-        params={"command_name": "motion", "std": 0.4},
-    )
-    motion_body_pos = RewTerm(
-        func=mdp.motion_relative_body_position_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 0.3},
-    )
-    motion_body_ori = RewTerm(
-        func=mdp.motion_relative_body_orientation_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 0.4},
-    )
-    motion_body_lin_vel = RewTerm(
-        func=mdp.motion_global_body_linear_velocity_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 1.0},
-    )
-    motion_body_ang_vel = RewTerm(
-        func=mdp.motion_global_body_angular_velocity_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 3.14},
-    )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
-    # undesired_contacts = RewTerm(
-    #     func=mdp.undesired_contacts,
-    #     weight=-0.1,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names=[
-    #                 r"^(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$).+$"
-    #             ],
-    #         ),
-    #         "threshold": 1.0,
-    #     },
-    # )
 
 
 @configclass
-class TerminationsCfg:
+class DistillationTerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
@@ -308,8 +233,9 @@ class TerminationsCfg:
         },
     )
 
+
 @configclass
-class CurriculumCfg:
+class DistillationCurriculumCfg:
     """Curriculum terms for the MDP."""
 
     pass
@@ -321,32 +247,35 @@ class CurriculumCfg:
 
 
 @configclass
-class TrackingEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the locomotion velocity-tracking environment."""
+class DistillationEnvCfg(ManagerBasedRLEnvCfg):
+    """Base distillation environment config.
 
-    # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=2.5)
-    # Basic settings
-    observations: ObservationsCfg = ObservationsCfg()
-    actions: ActionsCfg = ActionsCfg()
-    commands: CommandsCfg = CommandsCfg()
-    # MDP settings
-    rewards: RewardsCfg = RewardsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
-    events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg = CurriculumCfg()
+    Inherit and set robot, action scale, body names, anchor body, and motion file.
+    The RSL-RL :class:`~rsl_rl.algorithms.Distillation` algorithm handles BC loss
+    between teacher and student — no RL rewards needed.
+
+    Required overrides in sub-class ``__post_init__``:
+      - ``self.scene.robot``
+      - ``self.actions.joint_pos.scale``
+      - ``self.commands.motion.anchor_body_name`` / ``body_names`` / ``motion_file``
+    """
+
+    scene: DistillationSceneCfg = DistillationSceneCfg(num_envs=4096, env_spacing=2.5)
+    observations: DistillationObservationsCfg = DistillationObservationsCfg()
+    actions: DistillationActionsCfg = DistillationActionsCfg()
+    commands: DistillationCommandsCfg = DistillationCommandsCfg()
+    rewards: DistillationRewardsCfg = DistillationRewardsCfg()
+    terminations: DistillationTerminationsCfg = DistillationTerminationsCfg()
+    events: DistillationEventCfg = DistillationEventCfg()
+    curriculum: DistillationCurriculumCfg = DistillationCurriculumCfg()
 
     def __post_init__(self):
-        """Post initialization."""
-        # general settings
         self.decimation = 4
         self.episode_length_s = 10.0
-        # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
-        # viewer settings
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"

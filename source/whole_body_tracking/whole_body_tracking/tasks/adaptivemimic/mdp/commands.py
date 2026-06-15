@@ -14,12 +14,14 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils import configclass
 from isaaclab.utils.math import (
+    matrix_from_quat,
     quat_apply,
     quat_error_magnitude,
     quat_from_euler_xyz,
     quat_inv,
     quat_mul,
     sample_uniform,
+    subtract_frame_transforms,
     yaw_quat,
 )
 
@@ -86,6 +88,10 @@ class MotionCommand(CommandTerm):
             [self.cfg.adaptive_lambda**i for i in range(self.cfg.adaptive_kernel_size)], device=self.device
         )
         self.kernel = self.kernel / self.kernel.sum()
+
+        # RGMT: proprioceptive history buffer [num_envs, K, proprio_dim]
+        self.prop_history_len = getattr(cfg, "prop_history_len", 10)
+        self.prop_history = torch.zeros(self.num_envs, self.prop_history_len, 90, device=self.device)
 
         self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_rot"] = torch.zeros(self.num_envs, device=self.device)
@@ -183,7 +189,44 @@ class MotionCommand(CommandTerm):
     def robot_anchor_ang_vel_w(self) -> torch.Tensor:
         return self.robot.data.body_ang_vel_w[:, self.robot_anchor_body_index]
 
+    @property
+    def command_window(self) -> torch.Tensor:
+        """Command window of ±L frames around current timestep [num_envs, 2L+1, 50]."""
+        L = getattr(self.cfg, "command_window_half_size", 10)
+        indices = self.time_steps[:, None] + torch.arange(-L, L + 1, device=self.device)
+        indices = torch.clamp(indices, 0, self.motion.time_step_total - 1)
+        jp = self.motion.joint_pos[indices]
+        jv = self.motion.joint_vel[indices]
+        return torch.cat([jp, jv], dim=-1)
+
+    def _get_proprio_obs(self) -> torch.Tensor:
+        """Current proprioceptive observation [num_envs, 90] (no command)."""
+        pos_b, ori_b = subtract_frame_transforms(
+            self.robot_anchor_pos_w, self.robot_anchor_quat_w,
+            self.anchor_pos_w, self.anchor_quat_w,
+        )
+        ori_mat = matrix_from_quat(ori_b)
+        ori_b_flat = ori_mat[..., :2].reshape(self.num_envs, -1)
+        base_lin_vel = self.robot.data.root_lin_vel_w
+        base_ang_vel = self.robot.data.root_ang_vel_w
+        joint_pos = self.robot.data.joint_pos - self.robot.data.default_joint_pos
+        joint_vel = self.robot.data.joint_vel
+        last_action = self._env.action_manager.action
+        return torch.cat([
+            pos_b.view(self.num_envs, -1),
+            ori_b_flat,
+            base_lin_vel,
+            base_ang_vel,
+            joint_pos,
+            joint_vel,
+            last_action,
+        ], dim=-1)
+
     def _update_metrics(self):
+        # Update proprioceptive history buffer (shift left, insert current)
+        self.prop_history = torch.roll(self.prop_history, shifts=-1, dims=1)
+        self.prop_history[:, -1] = self._get_proprio_obs()
+
         self.metrics["error_anchor_pos"] = torch.norm(self.anchor_pos_w - self.robot_anchor_pos_w, dim=-1)
         self.metrics["error_anchor_rot"] = quat_error_magnitude(self.anchor_quat_w, self.robot_anchor_quat_w)
         self.metrics["error_anchor_lin_vel"] = torch.norm(self.anchor_lin_vel_w - self.robot_anchor_lin_vel_w, dim=-1)
@@ -277,6 +320,9 @@ class MotionCommand(CommandTerm):
             torch.cat([root_pos[env_ids], root_ori[env_ids], root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1),
             env_ids=env_ids,
         )
+        # Fill history buffer with current proprio after reset
+        proprio = self._get_proprio_obs()
+        self.prop_history[env_ids] = proprio[env_ids, None, :].expand(-1, self.prop_history_len, -1)
 
     def _update_command(self):
         self.time_steps += 1
@@ -371,6 +417,9 @@ class MotionCommandCfg(CommandTermCfg):
     adaptive_lambda: float = 0.8
     adaptive_uniform_ratio: float = 0.1
     adaptive_alpha: float = 0.001
+
+    prop_history_len: int = 10
+    command_window_half_size: int = 10
 
     anchor_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")
     anchor_visualizer_cfg.markers["frame"].scale = (0.2, 0.2, 0.2)
