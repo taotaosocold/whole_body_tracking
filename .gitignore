@@ -29,6 +29,9 @@
 docker/artifacts/
 *.tmp
 
+# Nohup output
+nohup_*
+
 # Isaac-Sim packman
 _isaac_sim*
 _repo

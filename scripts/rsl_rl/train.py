@@ -99,6 +99,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
     # load the motion file(s): from local path, folder, or wandb registry
+    registry_name = None
     if args_cli.motion_folder is not None:
         import pathlib
 
@@ -106,7 +107,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if not folder_path.is_dir():
             raise NotADirectoryError(f"Motion folder not found: {folder_path}")
         env_cfg.commands.motion.motion_folder = str(folder_path)
-        registry_name = None
     elif args_cli.motion_file is not None:
         import pathlib
 
@@ -114,7 +114,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if not motion_path.exists():
             raise FileNotFoundError(f"Motion file not found: {motion_path}")
         env_cfg.commands.motion.motion_file = str(motion_path)
-        registry_name = None
     elif args_cli.registry_name is not None:
         registry_name = args_cli.registry_name
         if ":" not in registry_name:
@@ -126,8 +125,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         api = wandb.Api()
         artifact = api.artifact(registry_name)
         env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
-    else:
-        raise ValueError("One of --motion_folder, --motion_file, or --registry_name must be provided.")
 
     # set teacher ONNX path for distillation PPO reward
     if args_cli.teacher_onnx is not None:

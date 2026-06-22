@@ -169,9 +169,15 @@ class MotionOnPolicyRunner(OnPolicyRunner):
         super().__init__(env, train_cfg, log_dir, device)
         self.registry_name = registry_name
 
+    def _is_motion_task(self) -> bool:
+        """Check if the environment has a motion command (vs. locomotion velocity commands)."""
+        return "motion" in self.env.unwrapped.command_manager.active_terms
+
     def save(self, path: str, infos=None):
         """Save the model and training information."""
         super().save(path, infos)
+        if not self._is_motion_task():
+            return
         policy_path = path.split("model")[0]
         filename = policy_path.split("/")[-2] + ".onnx"
         policy, normalizer = _get_policy_and_normalizer(self)
@@ -201,9 +207,15 @@ class MotionDistillationRunner(DistillationRunner):
         super().__init__(env, train_cfg, log_dir, device)
         self.registry_name = registry_name
 
+    def _is_motion_task(self) -> bool:
+        """Check if the environment has a motion command (vs. locomotion velocity commands)."""
+        return "motion" in self.env.unwrapped.command_manager.active_terms
+
     def save(self, path: str, infos=None):
         """Save the model and training information."""
         super().save(path, infos)
+        if not self._is_motion_task():
+            return
         policy_path = path.split("model")[0]
         filename = policy_path.split("/")[-2] + ".onnx"
         policy, normalizer = _get_policy_and_normalizer(self)

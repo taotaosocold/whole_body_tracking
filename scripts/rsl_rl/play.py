@@ -110,7 +110,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if art is None:
             print("[WARN] No model artifact found in the run.")
         else:
-            env_cfg.commands.motion.motion_file = str(pathlib.Path(art.download()) / "motion.npz")
+            if hasattr(env_cfg.commands, "motion"):
+                env_cfg.commands.motion.motion_file = str(pathlib.Path(art.download()) / "motion.npz")
 
     else:
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
@@ -121,7 +122,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
             print(f"[INFO]: Loading model checkpoint from: {resume_path}")
 
-    # set motion file from CLI if provided (and not already set by wandb path)
+    # set motion file from CLI if provided
     if args_cli.motion_file is not None:
         env_cfg.commands.motion.motion_file = args_cli.motion_file
 
@@ -159,29 +160,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         ppo_runner.load(resume_path)
         policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
-    # export policy to onnx
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+    # export policy to onnx (only for motion tasks)
+    is_motion_task = "motion" in env.unwrapped.command_manager.active_terms
+    if is_motion_task:
+        export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
 
-    if agent_cfg.class_name == "FastSacRunner":
-        policy_obj = sac_runner.actor
-        normalizer = sac_runner.obs_normalizer if sac_runner.obs_normalization else None
-    elif hasattr(ppo_runner.alg, "policy"):
-        policy_obj = ppo_runner.alg.policy
-        normalizer = getattr(ppo_runner, "obs_normalizer", None)
-    else:
-        policy_obj = _PolicyCompat(ppo_runner.alg.actor)
-        normalizer = ppo_runner.alg.actor.obs_normalizer
+        if agent_cfg.class_name == "FastSacRunner":
+            policy_obj = sac_runner.actor
+            normalizer = sac_runner.obs_normalizer if sac_runner.obs_normalization else None
+        elif hasattr(ppo_runner.alg, "policy"):
+            policy_obj = ppo_runner.alg.policy
+            normalizer = getattr(ppo_runner, "obs_normalizer", None)
+        else:
+            policy_obj = _PolicyCompat(ppo_runner.alg.actor)
+            normalizer = ppo_runner.alg.actor.obs_normalizer
 
-    export_motion_policy_as_onnx(
-        env.unwrapped,
-        policy_obj,
-        normalizer=normalizer,
-        path=export_model_dir,
-        filename="policy.onnx",
-    )
-    attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+        export_motion_policy_as_onnx(
+            env.unwrapped,
+            policy_obj,
+            normalizer=normalizer,
+            path=export_model_dir,
+            filename="policy.onnx",
+        )
+        attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
     # reset environment
-    obs, _ = env.get_observations()
+    obs = env.get_observations()
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
