@@ -67,6 +67,16 @@ gym.register(
 )
 
 gym.register(
+    id="Tracking-Flat-CASBOT-Residual-No-Disturbance-PenReward-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.CASBOTFlatResidualNoDisturbancePenRewardEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatPPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Tracking-Flat-CASBOT-Low-Freq-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,

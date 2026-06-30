@@ -20,6 +20,7 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
+parser.add_argument("--motion_folder", type=str, default=None, help="Path to a folder of motion .npz files for multi-motion tasks.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -122,9 +123,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
             print(f"[INFO]: Loading model checkpoint from: {resume_path}")
 
-    # set motion file from CLI if provided
-    if args_cli.motion_file is not None:
-        env_cfg.commands.motion.motion_file = args_cli.motion_file
+    # set motion file/folder from CLI if provided
+    if args_cli.motion_folder is not None:
+        folder_path = pathlib.Path(args_cli.motion_folder).resolve()
+        if not folder_path.is_dir():
+            raise NotADirectoryError(f"Motion folder does not exist: {folder_path}")
+        env_cfg.commands.motion.motion_folder = str(folder_path)
+    elif args_cli.motion_file is not None:
+        motion_path = pathlib.Path(args_cli.motion_file).resolve()
+        if not motion_path.is_file():
+            raise FileNotFoundError(f"Motion file does not exist: {motion_path}")
+        env_cfg.commands.motion.motion_file = str(motion_path)
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

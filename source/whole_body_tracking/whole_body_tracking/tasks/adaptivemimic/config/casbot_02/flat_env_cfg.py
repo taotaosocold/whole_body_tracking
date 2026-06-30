@@ -1,10 +1,11 @@
 from isaaclab.utils import configclass
 
-from whole_body_tracking.robots.casbot_02 import CASBOT_02_25DOF_ACTION_SCALE, CASBOT_02_25DOF_CYLINDER_CFG
+from whole_body_tracking.robots.casbot_02 import CASBOT_02_25DOF_ACTION_SCALE, CASBOT_02_25DOF_CYLINDER_CFG, CASBOT_02_25DOF_CYLINDER_WITH_HANDS_CFG
 from whole_body_tracking.tasks.adaptivemimic.config.casbot_02.agents.rsl_rl_ppo_cfg import LOW_FREQ_SCALE
 from whole_body_tracking.tasks.adaptivemimic.tracking_env_cfg import RGMTPolicyCfg, TrackingEnvCfg, VELOCITY_RANGE
 from whole_body_tracking.tasks.adaptivemimic.mdp.multimotion_commands import MultiMotionCommandCfg
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
@@ -95,6 +96,30 @@ class CASBOTFlatResidualNoDisturbanceEnvCfg(CASBOTFlatNoDisturbanceEnvCfg):
         self.actions.joint_pos = mdp.MotionResidualActionCfg(asset_name="robot", joint_names=[".*"])
         self.actions.joint_pos.scale = CASBOT_02_25DOF_ACTION_SCALE
 
+
+@configclass
+class CASBOTFlatResidualNoDisturbancePenRewardEnvCfg(CASBOTFlatResidualNoDisturbanceEnvCfg):
+    """Residual, no disturbance, with foot-slip and joint-acceleration penalty rewards."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.feet_slip = RewTerm(
+            func=mdp.feet_slip_penalty,
+            weight=-1.0,
+            params={
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_forces",
+                    body_names=["left_leg_ankle_roll_link", "right_leg_ankle_roll_link"],
+                ),
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    body_names=["left_leg_ankle_roll_link", "right_leg_ankle_roll_link"],
+                ),
+                "threshold": 1.0,
+            },
+        )
+
+
 @configclass
 class CASBOTFlatLowFreqEnvCfg(CASBOTFlatEnvCfg):
     def __post_init__(self):
@@ -141,7 +166,7 @@ class CASBOTMultiResidualNoDisturbanceEnvCfg(CASBOTMultiNoDisturbanceEnvCfg):
         self.actions.joint_pos.scale = CASBOT_02_25DOF_ACTION_SCALE
 
 @configclass
-class CASBOTMultiEnvCfg(CASBOTFlatEnvCfg):
+class CASBOTMultiEnvCfg(CASBOTFlatWoStateEstimationEnvCfg):
     """Multi-motion, with domain randomization and observation noise."""
 
     def __post_init__(self):

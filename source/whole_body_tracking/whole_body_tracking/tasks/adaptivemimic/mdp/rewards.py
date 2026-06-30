@@ -74,6 +74,46 @@ def motion_global_body_angular_velocity_error_exp(
     return torch.exp(-error.mean(-1) / std**2)
 
 
+def feet_slip_penalty(
+    env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg, threshold: float = 1.0
+) -> torch.Tensor:
+    """Penalize horizontal (XY) foot velocity when the foot is in contact with the ground.
+
+    Paper reference:
+        r_slip = -∑_{f∈feet} ||v_f,xy||² · 1[F_f > ε]
+    Only penalizes horizontal sliding — vertical velocity during contact is the foot lifting,
+    not slipping.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids]
+    in_contact = (torch.norm(net_forces, dim=-1) > threshold).float()  # [B, num_feet]
+    foot_vel_xy = env.scene[asset_cfg.name].data.body_lin_vel_w[:, asset_cfg.body_ids, :2]  # [B, num_feet, 2]
+    slip = torch.sum(torch.square(foot_vel_xy), dim=-1) * in_contact  # [B, num_feet]
+    cost = torch.sum(slip, dim=-1)  # [B]
+    return cost
+
+
+def joint_acceleration_penalty(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Penalize joint accelerations to suppress jitter / high-frequency dithering.
+
+    Paper reference:
+        r_acc = -∑_j ||a_j||²
+    where a_j is the joint acceleration computed via finite difference: (v_t - v_{t-1}) / dt.
+    """
+    asset = env.scene[asset_cfg.name]
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    key = f"_prev_joint_vel_{asset_cfg.name}"
+    if not hasattr(env, key):
+        setattr(env, key, joint_vel.clone())
+    prev_joint_vel = getattr(env, key)
+    joint_acc = (joint_vel - prev_joint_vel) / env.step_dt
+    setattr(env, key, joint_vel.clone())
+    # Don't penalize first step after reset (prev belongs to previous episode)
+    first_step_after_reset = env.episode_length_buf <= 1
+    penalty = torch.sum(torch.square(joint_acc), dim=-1)
+    return torch.where(first_step_after_reset, torch.zeros_like(penalty), penalty)
+
+
 def feet_contact_time(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     first_air = contact_sensor.compute_first_air(env.step_dt, env.physics_dt)[:, sensor_cfg.body_ids]

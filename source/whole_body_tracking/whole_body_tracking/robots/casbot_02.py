@@ -186,3 +186,10 @@ for _a in CASBOT_02_25DOF_CYLINDER_CFG.actuators.values():
     for _n in _names:
         if _n in _e and _n in _s and _s[_n]:
             CASBOT_02_25DOF_ACTION_SCALE[_n] = 0.25 * _e[_n] / _s[_n]
+
+
+CASBOT_02_25DOF_CYLINDER_WITH_HANDS_CFG = CASBOT_02_25DOF_CYLINDER_CFG.replace(
+    spawn=CASBOT_02_25DOF_CYLINDER_CFG.spawn.replace(
+        asset_path=f"{ASSET_DIR}/casbot_skeleton_description/urdf/casbot_skeleton_25dof_with_hands.urdf",
+    ),
+)
