@@ -38,6 +38,53 @@ def bad_anchor_ori(
     return (motion_projected_gravity_b[:, 2] - robot_projected_gravity_b[:, 2]).abs() > threshold
 
 
+def bad_anchor_ori_probabilistic(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, command_name: str, threshold: float, prob: float = 0.005
+) -> torch.Tensor:
+    """Bernoulli probabilistic termination for anchor orientation (Stubborn paper).
+
+    Instead of hard-terminating when the orientation error exceeds the threshold,
+    each step beyond the threshold terminates with probability *prob* (default 0.005).
+    This gives the policy ~200 expected extra steps to recover from falls.
+    The orientation error is computed in the yaw-aligned frame, ignoring heading.
+    """
+    from isaaclab.utils.math import matrix_from_quat, quat_error_magnitude, quat_mul
+
+    command: MotionCommand = env.command_manager.get_term(command_name)
+
+    # De-yaw both quaternions
+    def _de_yaw(q):
+        R = matrix_from_quat(q)
+        yaw = torch.atan2(R[..., 1, 0], R[..., 0, 0])
+        half_neg = -yaw / 2.0
+        qi = torch.stack(
+            [torch.cos(half_neg), torch.zeros_like(half_neg), torch.zeros_like(half_neg), torch.sin(half_neg)],
+            dim=-1,
+        )
+        return quat_mul(qi, q)
+
+    error = quat_error_magnitude(
+        _de_yaw(command.anchor_quat_w), _de_yaw(command.robot_anchor_quat_w)
+    )
+    over_threshold = error > threshold
+    rand = torch.rand(env.num_envs, device=env.device)
+    return over_threshold & (rand < prob)
+
+
+def bad_anchor_pos_z_only_probabilistic(
+    env: ManagerBasedRLEnv, command_name: str, threshold: float, prob: float = 0.005
+) -> torch.Tensor:
+    """Bernoulli probabilistic termination for anchor height (Stubborn paper).
+
+    Same probabilistic scheme as bad_anchor_ori_probabilistic, applied to the
+    vertical position error of the anchor body.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    over_threshold = torch.abs(command.anchor_pos_w[:, -1] - command.robot_anchor_pos_w[:, -1]) > threshold
+    rand = torch.rand(env.num_envs, device=env.device)
+    return over_threshold & (rand < prob)
+
+
 def bad_motion_body_pos(
     env: ManagerBasedRLEnv, command_name: str, threshold: float, body_names: list[str] | None = None
 ) -> torch.Tensor:

@@ -81,7 +81,7 @@ class ReplayMotionsSceneCfg(InteractiveSceneCfg):
     )
 
     # articulation
-    robot: ArticulationCfg = MARATHON_001_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = G1_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
 
 class MotionLoader:
@@ -352,24 +352,35 @@ def main():
         sim,
         scene,
         joint_names=[
-            "right_shoulder_pitch_joint",
-            "right_shoulder_roll_joint",
-            "right_elbow_pitch_joint",
+            "left_hip_pitch_joint",
+            "left_hip_roll_joint",
+            "left_hip_yaw_joint",
+            "left_knee_joint",
+            "left_ankle_pitch_joint",
+            "left_ankle_roll_joint",
+            "right_hip_pitch_joint",
+            "right_hip_roll_joint",
+            "right_hip_yaw_joint",
+            "right_knee_joint",
+            "right_ankle_pitch_joint",
+            "right_ankle_roll_joint",
+            "waist_yaw_joint",
+            "waist_roll_joint",
+            "waist_pitch_joint",
             "left_shoulder_pitch_joint",
             "left_shoulder_roll_joint",
-            "left_elbow_pitch_joint",
-            "right_leg_pelvic_pitch_pitch",
-            "right_leg_pelvic_roll_joint",
-            "right_leg_pelvic_yaw_joint",
-            "right_leg_knee_pitch_joint",
-            "right_leg_ankle_pitch_joint",
-            "right_leg_ankle_roll_joint",
-            "left_leg_pelvic_pitch_joint",
-            "left_leg_pelvic_roll_joint",
-            "left_leg_pelvic_yaw_joint",
-            "left_leg_knee_pitch_joint",
-            "left_leg_ankle_pitch_joint",
-            "left_leg_ankle_roll_joint"
+            "left_shoulder_yaw_joint",
+            "left_elbow_joint",
+            "left_wrist_roll_joint",
+            "left_wrist_pitch_joint",
+            "left_wrist_yaw_joint",
+            "right_shoulder_pitch_joint",
+            "right_shoulder_roll_joint",
+            "right_shoulder_yaw_joint",
+            "right_elbow_joint",
+            "right_wrist_roll_joint",
+            "right_wrist_pitch_joint",
+            "right_wrist_yaw_joint",
         ],
     )
 

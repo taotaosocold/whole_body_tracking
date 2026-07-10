@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from isaaclab.utils.math import quat_error_magnitude
+from isaaclab.utils.math import matrix_from_quat, quat_error_magnitude, quat_mul
 
 from whole_body_tracking.tasks.adaptivemimic.mdp.commands import MotionCommand
 
@@ -120,3 +120,30 @@ def feet_contact_time(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, thresh
     last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
     reward = torch.sum((last_contact_time < threshold) * first_air, dim=-1)
     return reward
+
+
+def _de_yaw(quat_w: torch.Tensor) -> torch.Tensor:
+    """Remove the yaw (world-Z rotation) component from a world-frame quaternion."""
+    R = matrix_from_quat(quat_w)
+    yaw = torch.atan2(R[..., 1, 0], R[..., 0, 0])
+    half_neg_yaw = -yaw / 2.0
+    q_yaw_inv = torch.stack(
+        [torch.cos(half_neg_yaw), torch.zeros_like(half_neg_yaw), torch.zeros_like(half_neg_yaw), torch.sin(half_neg_yaw)],
+        dim=-1,
+    )
+    return quat_mul(q_yaw_inv, quat_w)
+
+
+def motion_global_anchor_orientation_yaw_aligned_error_exp(
+    env: ManagerBasedRLEnv, command_name: str, std: float
+) -> torch.Tensor:
+    """Anchor orientation reward in yaw-aligned frame — ignores yaw (Stubborn paper).
+
+    Both anchor quaternions are de-yawed before computing the quaternion error,
+    so the reward only captures roll/pitch alignment, not heading.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    error = quat_error_magnitude(
+        _de_yaw(command.anchor_quat_w), _de_yaw(command.robot_anchor_quat_w)
+    ) ** 2
+    return torch.exp(-error / std**2)

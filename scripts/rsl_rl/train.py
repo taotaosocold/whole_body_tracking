@@ -71,7 +71,6 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.my_on_policy_runner import MotionDistillationRunner, MotionOnPolicyRunner
-from whole_body_tracking.utils.fast_sac.fast_sac_runner import FastSacRunner
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -164,8 +163,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # create runner from rsl-rl — select class based on agent config
     if agent_cfg.class_name == "DistillationRunner":
         runner_cls = MotionDistillationRunner
-    elif agent_cfg.class_name == "FastSacRunner":
-        runner_cls = FastSacRunner
     else:
         runner_cls = MotionOnPolicyRunner
     runner = runner_cls(

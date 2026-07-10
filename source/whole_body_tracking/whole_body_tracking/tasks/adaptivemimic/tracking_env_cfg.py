@@ -159,28 +159,6 @@ class ObservationsCfg:
 
 
 @configclass
-class RGMTPolicyCfg(ObsGroup):
-    """Policy observations matching the RGMT paper.
-
-    Current proprio (90) + prop_history (K*90) + command_window ((2L+1)*50).
-    No ``generated_commands`` term --- the command_window centre frame subsumes it.
-    """
-
-    motion_anchor_pos_b = ObsTerm(func=mdp.motion_anchor_pos_b, params={"command_name": "motion"})
-    motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"})
-    base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-    base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
-    joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-    joint_vel = ObsTerm(func=mdp.joint_vel_rel)
-    actions = ObsTerm(func=mdp.last_action)
-    prop_history = ObsTerm(func=mdp.prop_history, params={"command_name": "motion"})
-    command_window = ObsTerm(func=mdp.command_window, params={"command_name": "motion"})
-
-    def __post_init__(self):
-        self.concatenate_terms = True
-
-
-@configclass
 class EventCfg:
     """Configuration for events."""
 

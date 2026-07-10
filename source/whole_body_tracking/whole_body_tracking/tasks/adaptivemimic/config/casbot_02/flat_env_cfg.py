@@ -1,8 +1,9 @@
 from isaaclab.utils import configclass
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from whole_body_tracking.robots.casbot_02 import CASBOT_02_25DOF_ACTION_SCALE, CASBOT_02_25DOF_CYLINDER_CFG, CASBOT_02_25DOF_CYLINDER_WITH_HANDS_CFG
+from whole_body_tracking.robots.casbot_02 import CASBOT_02_25DOF_ACTION_SCALE, CASBOT_02_25DOF_CYLINDER_CFG, CASBOT_02_25DOF_CYLINDER_WITH_HANDS_CFG, CASBOT_02_25DOF_CYLINDER_DIRECT_CFG, CASBOT_02_25DOF_DIRECT_ACTION_SCALE
 from whole_body_tracking.tasks.adaptivemimic.config.casbot_02.agents.rsl_rl_ppo_cfg import LOW_FREQ_SCALE
-from whole_body_tracking.tasks.adaptivemimic.tracking_env_cfg import RGMTPolicyCfg, TrackingEnvCfg, VELOCITY_RANGE
+from whole_body_tracking.tasks.adaptivemimic.tracking_env_cfg import TrackingEnvCfg, VELOCITY_RANGE
 from whole_body_tracking.tasks.adaptivemimic.mdp.multimotion_commands import MultiMotionCommandCfg
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -16,8 +17,8 @@ class CASBOTFlatEnvCfg(TrackingEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        self.scene.robot = CASBOT_02_25DOF_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        self.actions.joint_pos.scale = CASBOT_02_25DOF_ACTION_SCALE
+        self.scene.robot = CASBOT_02_25DOF_CYLINDER_DIRECT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.actions.joint_pos.scale = CASBOT_02_25DOF_DIRECT_ACTION_SCALE
         self.commands.motion.anchor_body_name = "waist_yaw_link"
         self.commands.motion.body_names = [
             "base_link",
@@ -35,21 +36,6 @@ class CASBOTFlatEnvCfg(TrackingEnvCfg):
             "right_elbow_pitch_link",
             "right_wrist_yaw_link",
         ]
-        self.terminations.ee_body_global_pos_z = DoneTerm(
-            func=mdp.bad_motion_body_global_pos_z_only,
-            params={
-                "command_name": "motion",
-                "threshold": 0.25,
-                "body_names": [
-                    "left_ankle_roll_link",
-                    "right_ankle_roll_link",
-                    "left_wrist_yaw_link",
-                    "right_wrist_yaw_link",
-                ],
-            },
-        )
-        self.terminations.ee_body_pos = None
-
 
 @configclass
 class CASBOTFlatWoStateEstimationEnvCfg(CASBOTFlatEnvCfg):
@@ -95,29 +81,6 @@ class CASBOTFlatResidualNoDisturbanceEnvCfg(CASBOTFlatNoDisturbanceEnvCfg):
         super().__post_init__()
         self.actions.joint_pos = mdp.MotionResidualActionCfg(asset_name="robot", joint_names=[".*"])
         self.actions.joint_pos.scale = CASBOT_02_25DOF_ACTION_SCALE
-
-
-@configclass
-class CASBOTFlatResidualNoDisturbancePenRewardEnvCfg(CASBOTFlatResidualNoDisturbanceEnvCfg):
-    """Residual, no disturbance, with foot-slip and joint-acceleration penalty rewards."""
-
-    def __post_init__(self):
-        super().__post_init__()
-        self.rewards.feet_slip = RewTerm(
-            func=mdp.feet_slip_penalty,
-            weight=-1.0,
-            params={
-                "sensor_cfg": SceneEntityCfg(
-                    "contact_forces",
-                    body_names=["left_leg_ankle_roll_link", "right_leg_ankle_roll_link"],
-                ),
-                "asset_cfg": SceneEntityCfg(
-                    "robot",
-                    body_names=["left_leg_ankle_roll_link", "right_leg_ankle_roll_link"],
-                ),
-                "threshold": 1.0,
-            },
-        )
 
 
 @configclass
@@ -179,20 +142,30 @@ class CASBOTMultiEnvCfg(CASBOTFlatWoStateEstimationEnvCfg):
 
 
 @configclass
-class CASBOTFlatRGMTNoDisturbanceEnvCfg(CASBOTFlatNoDisturbanceEnvCfg):
-    """CASBOT no-disturbance env with RGMT attention policy observations."""
+class CASBOTFlatWoStateEstimationStubbornEnvCfg(CASBOTFlatWoStateEstimationEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.observations.policy = RGMTPolicyCfg()
-
-
-@configclass
-class CASBOTFlatRGMTWoStateEstimationEnvCfg(CASBOTFlatWoStateEstimationEnvCfg):
-    """CASBOT wo-state-estimation env with RGMT attention policy observations."""
-
-    def __post_init__(self):
-        super().__post_init__()
-        self.observations.policy = RGMTPolicyCfg()
-        self.observations.policy.motion_anchor_pos_b = None
-        self.observations.policy.base_lin_vel = None
+        self.observations.policy.motion_anchor_ori_b = ObsTerm(
+            func=mdp.motion_anchor_ori_yaw_aligned_b,
+            params={"command_name": "motion"},
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+        )
+        self.rewards.motion_global_anchor_ori = RewTerm(
+            func=mdp.motion_global_anchor_orientation_yaw_aligned_error_exp,
+            weight=0.5,
+            params={"command_name": "motion", "std": 0.4},
+        )
+        self.terminations.anchor_ori = DoneTerm(
+            func=mdp.bad_anchor_ori_probabilistic,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "command_name": "motion",
+                "threshold": 1.5708,  # π/2 rad
+                "prob": 0.005,
+            },
+        )
+        self.terminations.anchor_pos = DoneTerm(
+            func=mdp.bad_anchor_pos_z_only_probabilistic,
+            params={"command_name": "motion", "threshold": 0.25, "prob": 0.005},
+        )
