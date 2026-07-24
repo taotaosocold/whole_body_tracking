@@ -1,3 +1,5 @@
+from dataclasses import fields
+
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
@@ -5,6 +7,7 @@ from whole_body_tracking.robots.casbot_02 import CASBOT_02_25DOF_ACTION_SCALE, C
 from whole_body_tracking.tasks.adaptivemimic.config.casbot_02.agents.rsl_rl_ppo_cfg import LOW_FREQ_SCALE
 from whole_body_tracking.tasks.adaptivemimic.tracking_env_cfg import TrackingEnvCfg, VELOCITY_RANGE
 from whole_body_tracking.tasks.adaptivemimic.mdp.multimotion_commands import MultiMotionCommandCfg
+from whole_body_tracking.robots.actuator import DelayedImplicitActuatorCfg
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import TerminationTermCfg as DoneTerm
@@ -17,8 +20,8 @@ class CASBOTFlatEnvCfg(TrackingEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        self.scene.robot = CASBOT_02_25DOF_CYLINDER_DIRECT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        self.actions.joint_pos.scale = CASBOT_02_25DOF_DIRECT_ACTION_SCALE
+        self.scene.robot = CASBOT_02_25DOF_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.actions.joint_pos.scale = CASBOT_02_25DOF_ACTION_SCALE
         self.commands.motion.anchor_body_name = "waist_yaw_link"
         self.commands.motion.body_names = [
             "base_link",
@@ -48,6 +51,21 @@ class CASBOTFlatWoStateEstimationEnvCfg(CASBOTFlatEnvCfg):
 class CASBOTFlatWoStateEstimationAggressiveDomainEnvCfg(CASBOTFlatWoStateEstimationEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+
+        # Randomize motor communication latency independently for every environment
+        # at reset. With sim.dt=5 ms, 0--2 physics steps correspond to 0--10 ms.
+        for actuator_name, actuator_cfg in self.scene.robot.actuators.items():
+            actuator_params = {
+                field.name: getattr(actuator_cfg, field.name)
+                for field in fields(actuator_cfg)
+                if field.name != "class_type"
+            }
+            self.scene.robot.actuators[actuator_name] = DelayedImplicitActuatorCfg(
+                **actuator_params,
+                min_delay=0,
+                max_delay=2,
+            )
+
         self.events.add_base_mass = EventTerm(
             func=mdp.randomize_rigid_body_mass,
             mode="startup",

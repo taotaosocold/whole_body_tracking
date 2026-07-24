@@ -185,7 +185,7 @@ for _a in CASBOT_02_25DOF_CYLINDER_CFG.actuators.values():
         _s = {n: _s for n in _names}
     for _n in _names:
         if _n in _e and _n in _s and _s[_n]:
-            CASBOT_02_25DOF_ACTION_SCALE[_n] = 0.25 * _e[_n] / _s[_n]
+            CASBOT_02_25DOF_ACTION_SCALE[_n] = 0.75 * _e[_n] / _s[_n]
 
 
 CASBOT_02_25DOF_CYLINDER_WITH_HANDS_CFG = CASBOT_02_25DOF_CYLINDER_CFG.replace(
