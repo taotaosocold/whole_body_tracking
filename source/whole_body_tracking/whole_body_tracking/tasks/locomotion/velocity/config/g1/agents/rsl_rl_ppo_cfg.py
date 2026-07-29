@@ -4,11 +4,11 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 
 @configclass
-class CASBOTLocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class G1LocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 100000
     save_interval = 50
-    experiment_name = "casbot_locomotion_flat"
+    experiment_name = "g1_locomotion_flat"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_obs_normalization=False,
@@ -34,8 +34,8 @@ class CASBOTLocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
-class CASBOTLocomotionTerrainPPORunnerCfg(CASBOTLocomotionFlatPPORunnerCfg):
-    """Standard ActorCritic MLP; the height scan is concatenated to its input."""
+class G1LocomotionTerrainPPORunnerCfg(G1LocomotionFlatPPORunnerCfg):
+    """Pure MLP policy with the terrain scan concatenated to its input."""
 
     max_iterations = 10000
-    experiment_name = "casbot_locomotion_terrain"
+    experiment_name = "g1_locomotion_terrain"

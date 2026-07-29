@@ -31,3 +31,11 @@ class MARATHONLocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class MARATHONLocomotionTerrainPPORunnerCfg(MARATHONLocomotionFlatPPORunnerCfg):
+    """Standard ActorCritic MLP; the height scan is concatenated to its input."""
+
+    max_iterations = 10000
+    experiment_name = "marathon_locomotion_terrain"

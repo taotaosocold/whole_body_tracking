@@ -37,31 +37,21 @@ gym.register(
 )
 
 gym.register(
-    id="Tracking-Flat-CASBOT-Wo-State-Estimation-Residual-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": flat_env_cfg.CASBOTFlatWoStateEstimationResidualEnvCfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatPPORunnerCfg",
-    },
-)
-
-gym.register(
-    id="Tracking-Flat-CASBOT-No-Disturbance-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": flat_env_cfg.CASBOTFlatNoDisturbanceEnvCfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatPPORunnerCfg",
-    },
-)
-
-gym.register(
     id="Tracking-Flat-CASBOT-Residual-No-Disturbance-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.CASBOTFlatResidualNoDisturbanceEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Tracking-Flat-CASBOT-New-Reward-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.CASBOTFlatNewRewardEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatPPORunnerCfg",
     },
 )
@@ -73,16 +63,6 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.CASBOTFlatLowFreqEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatLowFreqPPORunnerCfg",
-    },
-)
-
-gym.register(
-    id="Tracking-Flat-CASBOT-Multi-No-Disturbance-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": flat_env_cfg.CASBOTMultiNoDisturbanceEnvCfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatPPORunnerCfg",
     },
 )
 

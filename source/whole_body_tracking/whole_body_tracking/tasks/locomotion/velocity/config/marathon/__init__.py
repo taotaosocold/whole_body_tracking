@@ -13,11 +13,13 @@ gym.register(
 )
 
 gym.register(
-    id="Locomotion-Flat-MARATHON-NoDR-v0",
+    id="Locomotion-Terrain-MARATHON-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": flat_env_cfg.MARATHONLocomotionFlatNoDRCfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:MARATHONLocomotionFlatPPORunnerCfg",
+        "env_cfg_entry_point": flat_env_cfg.MARATHONLocomotionTerrainEnvCfg,
+        "rsl_rl_cfg_entry_point": (
+            f"{agents.__name__}.rsl_rl_ppo_cfg:MARATHONLocomotionTerrainPPORunnerCfg"
+        ),
     },
 )
