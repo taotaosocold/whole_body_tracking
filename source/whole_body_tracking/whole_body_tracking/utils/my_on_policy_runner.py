@@ -112,6 +112,15 @@ def _learn_with_best_tracking(runner, num_learning_iterations: int, init_at_rand
         with torch.inference_mode():
             for _ in range(runner.cfg["num_steps_per_env"]):
                 actions = runner.alg.act(obs)
+                # Optional hook used by AdaptivePPO. The existing adaptive-sampling bin is captured
+                # before env.step(), so it matches the observation/action stored
+                # by alg.act() rather than the next reference frame.
+                if (
+                    hasattr(runner.alg, "record_motion_bin")
+                    and "motion" in runner.env.unwrapped.command_manager.active_terms
+                ):
+                    motion_command = runner.env.unwrapped.command_manager.get_term("motion")
+                    runner.alg.record_motion_command(motion_command)
                 obs, rewards, dones, extras = runner.env.step(actions.to(runner.env.device))
                 if runner.cfg.get("check_for_nan", True):
                     check_nan(obs, rewards, dones)

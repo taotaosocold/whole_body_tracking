@@ -1,5 +1,7 @@
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg
+
+from whole_body_tracking.utils.adaptive_ppo import AdaptivePpoAlgorithmCfg
 
 
 @configclass
@@ -15,7 +17,7 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
     )
-    algorithm = RslRlPpoAlgorithmCfg(
+    algorithm = AdaptivePpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
@@ -28,6 +30,18 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+        # Strictly on-policy: repeat current-rollout elites from the hardest
+        # adaptive-reset bins inside every normal PPO mini-batch.
+        hard_bin_fraction=0.10,
+        elite_fraction=0.10,
+        elite_min_advantage=0.0,
+        elite_min_samples_per_bin=32,
+        elite_min_positive_samples_per_bin=5,
+        elite_max_fraction_of_rollout=0.03,
+        elite_warmup_iterations=2000,
+        forgetting_trigger_enabled=True,
+        forgetting_ema_alpha=0.05,
+        forgetting_relative_margin=0.05,
     )
 
 

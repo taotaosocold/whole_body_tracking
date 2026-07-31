@@ -27,6 +27,16 @@ gym.register(
 )
 
 gym.register(
+    id="Tracking-Flat-CASBOT-Wo-State-Estimation-Adaptive-PPO-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.CASBOTFlatWoStateEstimationAdaptivePPOEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CASBOTFlatAdaptivePPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Tracking-Flat-CASBOT-Wo-State-Estimation-Aggressive-Domain-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,

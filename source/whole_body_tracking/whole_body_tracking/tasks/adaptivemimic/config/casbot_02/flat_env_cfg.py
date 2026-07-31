@@ -47,6 +47,13 @@ class CASBOTFlatWoStateEstimationEnvCfg(CASBOTFlatEnvCfg):
         self.observations.policy.motion_anchor_pos_b = None
         self.observations.policy.base_lin_vel = None
 
+
+@configclass
+class CASBOTFlatWoStateEstimationAdaptivePPOEnvCfg(CASBOTFlatWoStateEstimationEnvCfg):
+    """Unchanged wo-state-estimation environment registered with AdaptivePPO."""
+
+    pass
+
 @configclass
 class CASBOTFlatWoStateEstimationAggressiveDomainEnvCfg(CASBOTFlatWoStateEstimationEnvCfg):
     def __post_init__(self):
@@ -70,11 +77,59 @@ class CASBOTFlatWoStateEstimationAggressiveDomainEnvCfg(CASBOTFlatWoStateEstimat
             func=mdp.randomize_rigid_body_mass,
             mode="startup",
             params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-                "mass_distribution_params": (-0.3, 0.8),
+                "asset_cfg": SceneEntityCfg("robot", body_names="base_link"),
+                "mass_distribution_params": (-4.0, 4.0),
                 "operation": "add",
             },
-    )
+        )
+
+        self.events.scale_link_mass = EventTerm(
+            func=mdp.randomize_rigid_body_mass,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=["^(?!base_link$).*"]),
+                "mass_distribution_params": (0.8, 1.2),
+                "operation": "scale",
+            },
+        )
+        self.events.base_com.params["asset_cfg"] = SceneEntityCfg("robot", body_names="base_link")
+        self.events.base_com.params["com_range"] = {
+            "x": (-0.06, 0.06),
+            "y": (-0.06, 0.06),
+            "z": (-0.06, 0.06),
+        }
+        self.events.actuator_gains = EventTerm(
+            func=mdp.randomize_actuator_gains,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+                "stiffness_distribution_params": (0.8, 1.2),
+                "damping_distribution_params": (0.8, 1.2),
+                "operation": "scale",
+                "distribution": "uniform",
+            },
+        )
+        self.events.add_joint_default_pos.params["pos_distribution_params"] = (-0.035, 0.035)
+        self.events.joint_friction = EventTerm(
+            func=mdp.randomize_joint_parameters,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+                "friction_distribution_params": (0.01, 1.15),
+                "operation": "scale",
+                "distribution": "uniform",
+            },
+        )
+        self.events.joint_armature = EventTerm(
+            func=mdp.randomize_joint_parameters,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+                "armature_distribution_params": (0.008, 0.06),
+                "operation": "abs",
+                "distribution": "uniform",
+            },
+        )
 
 @configclass
 class CASBOTFlatResidualNoDisturbanceEnvCfg(CASBOTFlatEnvCfg):
