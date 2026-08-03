@@ -2,6 +2,8 @@ from isaaclab.utils import configclass
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
 
+from whole_body_tracking.tasks.locomotion.velocity.terrain_encoder import RslRlTerrainEncoderModelCfg
+
 
 @configclass
 class G1LocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
@@ -35,7 +37,28 @@ class G1LocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 @configclass
 class G1LocomotionTerrainPPORunnerCfg(G1LocomotionFlatPPORunnerCfg):
-    """Pure MLP policy with the terrain scan concatenated to its input."""
+    """AME-style CNN/cross-attention policy for terrain locomotion."""
 
     max_iterations = 10000
     experiment_name = "g1_locomotion_terrain"
+    actor = RslRlTerrainEncoderModelCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=False,
+        stochastic=True,
+        init_noise_std=1.0,
+        noise_std_type="scalar",
+        state_dependent_std=False,
+    )
+    critic = RslRlTerrainEncoderModelCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=False,
+        stochastic=False,
+        init_noise_std=0.0,
+        noise_std_type="scalar",
+        state_dependent_std=False,
+    )
+
+    def __post_init__(self):
+        self.algorithm.share_cnn_encoders = False

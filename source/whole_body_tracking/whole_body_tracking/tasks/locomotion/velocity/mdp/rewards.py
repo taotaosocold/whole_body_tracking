@@ -19,9 +19,7 @@ def track_lin_vel_xy_yaw_frame_exp(
     lin_vel_error = torch.sum(
         torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1
     )
-    reward = torch.exp(-lin_vel_error / std**2)
-    reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
-    return reward
+    return torch.exp(-lin_vel_error / std**2)
 
 
 def track_ang_vel_z_world_exp(
@@ -30,9 +28,7 @@ def track_ang_vel_z_world_exp(
     """Reward tracking of angular velocity commands (yaw) in world frame using exponential kernel."""
     asset = env.scene[asset_cfg.name]
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
-    reward = torch.exp(-ang_vel_error / std**2)
-    reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
-    return reward
+    return torch.exp(-ang_vel_error / std**2)
 
 
 def feet_air_time_positive_biped(
@@ -51,8 +47,7 @@ def feet_air_time_positive_biped(
     single_stance = torch.sum(in_contact.int(), dim=1) == 1
     reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
     reward = torch.clamp(reward, max=threshold)
-    reward *= torch.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
-    reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
+    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
     return reward
 
 
@@ -85,15 +80,21 @@ def feet_too_near(env, threshold: float, asset_cfg: SceneEntityCfg) -> torch.Ten
 
 
 def joint_coordination_rel(
-    env, asset_cfg: SceneEntityCfg, coord_joints: list[list[str]], coord_signs: list[list[float]]
+    env,
+    asset_cfg: SceneEntityCfg,
+    coord_joints: list[list[str]],
+    coord_signs: list[list[float]] | None = None,
 ) -> torch.Tensor:
     """Penalize deviation from coordinated relative motion of specified joint pairs."""
     asset = env.scene[asset_cfg.name]
-    if not hasattr(env, "joint_coord_joints_cache"):
+    if not hasattr(env, "joint_coord_joints_cache") or env.joint_coord_joints_cache is None:
         env.joint_coord_joints_cache = [
             [asset.find_joints(joint_name)[0] for joint_name in joint_pair]
             for joint_pair in coord_joints
         ]
+
+    if coord_signs is None:
+        coord_signs = [[1.0, 1.0]] * len(coord_joints)
 
     penalty = torch.zeros(env.num_envs, device=env.device)
     for joint_indices, signs in zip(env.joint_coord_joints_cache, coord_signs):
