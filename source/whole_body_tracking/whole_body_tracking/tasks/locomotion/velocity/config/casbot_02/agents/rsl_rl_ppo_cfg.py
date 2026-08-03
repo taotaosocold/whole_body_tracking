@@ -8,7 +8,7 @@ from whole_body_tracking.tasks.locomotion.velocity.terrain_encoder import RslRlT
 @configclass
 class CASBOTLocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 100000
+    max_iterations = 15000
     save_interval = 50
     experiment_name = "casbot_locomotion_flat"
     policy = RslRlPpoActorCriticCfg(
@@ -39,7 +39,7 @@ class CASBOTLocomotionFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class CASBOTLocomotionTerrainPPORunnerCfg(CASBOTLocomotionFlatPPORunnerCfg):
     """AME-style CNN/cross-attention policy for terrain locomotion."""
 
-    max_iterations = 10000
+    max_iterations = 15000
     experiment_name = "casbot_locomotion_terrain"
     actor = RslRlTerrainEncoderModelCfg(
         hidden_dims=[512, 256, 128],

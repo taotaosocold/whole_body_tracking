@@ -148,6 +148,6 @@ class TerrainEncoderModel(MLPModel):
             query=query,
             key=local_features,
             value=local_features,
-            need_weights=False,
+            need_weights=True,
         )
         return torch.cat((proprio, terrain_feature.squeeze(1)), dim=-1)
