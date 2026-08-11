@@ -18,6 +18,7 @@ from whole_body_tracking.robots.g1 import (
     STIFFNESS_7520_22 as G1_STIFFNESS_7520_22,
 )
 
+
 # fmt: off
 # Armature values per joint group
 ARMATURE_LEG_PITCH = 0.06999046   # leg_pelvic_pitch, leg_knee_pitch
@@ -43,7 +44,7 @@ CASBOT_02_25DOF_CYLINDER_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,
         replace_cylinders_with_capsules=True,
-        asset_path=f"{ASSET_DIR}/casbot_skeleton_description/urdf/casbot_skeleton_25dof.urdf",
+        asset_path=f"{ASSET_DIR}/casbot_skeleton_description/urdf/casbot_skeleton_25_dof_rev_1_0.urdf",
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
@@ -55,7 +56,7 @@ CASBOT_02_25DOF_CYLINDER_CFG = ArticulationCfg(
             max_depenetration_velocity=1.0,
         ),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False, solver_position_iteration_count=8, solver_velocity_iteration_count=4
+            enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=4
         ),
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
@@ -215,7 +216,7 @@ CASBOT_02_25DOF_CYLINDER_DIRECT_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,
         replace_cylinders_with_capsules=True,
-        asset_path=f"{ASSET_DIR}/casbot_skeleton_description/urdf/casbot_skeleton_25dof.urdf",
+        asset_path=f"{ASSET_DIR}/casbot_skeleton_description/urdf/casbot_skeleton_25_dof_rev_1_0.urdf",
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,

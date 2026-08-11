@@ -51,5 +51,5 @@ def elevation_map_xyz(env, sensor_cfg: SceneEntityCfg, noise: bool = False) -> t
         sensor_coords[..., 2] += torch.randn_like(sensor_coords[..., 2]) * 0.03
         sensor_coords[..., 2] += env._elevation_map_offset
 
-    sensor_coords[..., 2] = torch.clamp(sensor_coords[..., 2], min=-1.2, max=0.0)
+    sensor_coords[..., 2] = torch.clamp(sensor_coords[..., 2], min=-20.0, max=20.0)
     return sensor_coords.reshape(num_envs, num_rays * 3)

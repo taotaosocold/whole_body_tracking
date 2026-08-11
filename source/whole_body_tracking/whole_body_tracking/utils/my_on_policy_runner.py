@@ -10,7 +10,11 @@ from rsl_rl.utils import check_nan
 
 from isaaclab_rl.rsl_rl import export_policy_as_onnx
 
-from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
+from whole_body_tracking.utils.exporter import (
+    attach_onnx_metadata,
+    export_motion_policy_as_onnx,
+    export_parkour_policy_as_onnx,
+)
 
 
 class _PolicyCompat:
@@ -180,10 +184,14 @@ class MotionOnPolicyRunner(OnPolicyRunner):
             return
         policy_path = path.split("model")[0]
         filename = policy_path.split("/")[-2] + ".onnx"
-        policy, normalizer = _get_policy_and_normalizer(self)
-        export_motion_policy_as_onnx(
-            self.env.unwrapped, policy, normalizer=normalizer, path=policy_path, filename=filename
-        )
+        actor = getattr(self.alg, "actor", None)
+        if actor is not None and hasattr(actor, "map_scan_size"):
+            export_parkour_policy_as_onnx(actor, path=policy_path, filename=filename)
+        else:
+            policy, normalizer = _get_policy_and_normalizer(self)
+            export_motion_policy_as_onnx(
+                self.env.unwrapped, policy, normalizer=normalizer, path=policy_path, filename=filename
+            )
         if _is_wandb_logger(self):
             import wandb
 

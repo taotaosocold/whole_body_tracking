@@ -61,7 +61,12 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
-from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
+from whole_body_tracking.utils.exporter import (
+    attach_onnx_metadata,
+    export_motion_policy_as_onnx,
+    export_parkour_policy_as_onnx,
+    export_terrain_policy_as_onnx,
+)
 from whole_body_tracking.utils.my_on_policy_runner import _PolicyCompat
 
 
@@ -168,21 +173,49 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if is_motion_task:
         export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
 
-        if hasattr(ppo_runner.alg, "policy"):
+        actor = getattr(ppo_runner.alg, "actor", None)
+        if actor is not None and hasattr(actor, "map_scan_size"):
+            export_parkour_policy_as_onnx(
+                actor,
+                path=export_model_dir,
+                filename="policy.onnx",
+            )
+        elif hasattr(ppo_runner.alg, "policy"):
             policy_obj = ppo_runner.alg.policy
             normalizer = getattr(ppo_runner, "obs_normalizer", None)
+            export_motion_policy_as_onnx(
+                env.unwrapped,
+                policy_obj,
+                normalizer=normalizer,
+                path=export_model_dir,
+                filename="policy.onnx",
+            )
         else:
             policy_obj = _PolicyCompat(ppo_runner.alg.actor)
             normalizer = ppo_runner.alg.actor.obs_normalizer
-
-        export_motion_policy_as_onnx(
-            env.unwrapped,
-            policy_obj,
-            normalizer=normalizer,
-            path=export_model_dir,
-            filename="policy.onnx",
-        )
+            export_motion_policy_as_onnx(
+                env.unwrapped,
+                policy_obj,
+                normalizer=normalizer,
+                path=export_model_dir,
+                filename="policy.onnx",
+            )
         attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+    elif "base_velocity" in env.unwrapped.command_manager.active_terms:
+        export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+        actor = ppo_runner.alg.actor
+        if hasattr(actor, "map_scan_size"):
+            export_terrain_policy_as_onnx(
+                actor,
+                path=export_model_dir,
+                filename="policy.onnx",
+            )
+        else:
+            ppo_runner.export_policy_to_onnx(
+                export_model_dir,
+                filename="policy.onnx",
+            )
+        print(f"[INFO]: Exported locomotion policy to: {os.path.join(export_model_dir, 'policy.onnx')}")
     # reset environment
     obs = env.get_observations()
     timestep = 0
