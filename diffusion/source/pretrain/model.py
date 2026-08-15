@@ -160,8 +160,9 @@ class _DiTBlock(nn.Module):
     else:
       kv_src = self.norm1(x)
 
-    k = self.to_k(kv_src).reshape(B, N, h, d).transpose(1, 2)
-    v = self.to_v(kv_src).reshape(B, N, h, d).transpose(1, 2)
+    M = kv_src.shape[1]
+    k = self.to_k(kv_src).reshape(B, M, h, d).transpose(1, 2)
+    v = self.to_v(kv_src).reshape(B, M, h, d).transpose(1, 2)
 
     out = F.scaled_dot_product_attention(q, k, v, is_causal=False)
     out = out.transpose(1, 2).reshape(B, N, h * d)
@@ -265,7 +266,7 @@ class DiffusionDenoiser(nn.Module):
     terrain_height: int = 21,
     terrain_width: int = 33,
     terrain_feature_dim: int = 23,
-    command_dim: int = 3,
+    proprio_dim: int = 31,
   ) -> None:
     super().__init__()
     self.feature_dim = feature_dim
@@ -274,7 +275,7 @@ class DiffusionDenoiser(nn.Module):
     self.terrain_height = terrain_height
     self.terrain_width = terrain_width
     self.terrain_feature_dim = terrain_feature_dim
-    self.command_dim = command_dim
+    self.proprio_dim = proprio_dim
 
     if head_dim is None:
       if d_model % nhead != 0:
@@ -294,7 +295,7 @@ class DiffusionDenoiser(nn.Module):
       )
       raise ValueError(msg)
 
-    # K/V condition: 23-D CNN terrain feature + local [vx, vy, wz].
+    # Each K/V token: terrain feature + joint position + target heading rot6d.
     if terrain_dim is not None:
       expected_terrain_dim = terrain_height * terrain_width
       if terrain_dim != expected_terrain_dim:
@@ -308,7 +309,11 @@ class DiffusionDenoiser(nn.Module):
         output_dim=terrain_feature_dim,
       )
       self.condition_proj = nn.Sequential(
-        nn.Linear(terrain_feature_dim + command_dim, self.inner_dim, bias=False),
+        nn.Linear(
+          terrain_feature_dim + proprio_dim,
+          self.inner_dim,
+          bias=False,
+        ),
         nn.LayerNorm(self.inner_dim, elementwise_affine=False),
         nn.SiLU(),
         nn.Linear(self.inner_dim, self.inner_dim, bias=False),
@@ -349,7 +354,7 @@ class DiffusionDenoiser(nn.Module):
     x_t: torch.Tensor,
     t: torch.Tensor,
     terrain: torch.Tensor | None = None,
-    command: torch.Tensor | None = None,
+    proprio: torch.Tensor | None = None,
   ) -> torch.Tensor:
     # --- Motion pathway ---------------------------------------------------
     h = x_t  # (B, W, feature_dim)
@@ -362,15 +367,15 @@ class DiffusionDenoiser(nn.Module):
     # --- Terrain pathway --------------------------------------------------
     t_emb: torch.Tensor | None = None
     if terrain is not None and self.terrain_encoder is not None:
-      if command is None:
-        raise ValueError("terrain-conditioned denoising requires [vx, vy, wz] command")
-      if command.shape[:2] != terrain.shape[:2] or command.shape[-1] != self.command_dim:
+      if proprio is None:
+        raise ValueError("terrain-conditioned denoising requires historical proprio")
+      if proprio.shape[:2] != terrain.shape[:2] or proprio.shape[-1] != self.proprio_dim:
         raise ValueError(
-          f"expected command shape (B,W,{self.command_dim}) matching terrain, "
-          f"got {command.shape}"
+          f"expected proprio shape (B,W,{self.proprio_dim}) matching terrain, "
+          f"got {proprio.shape}"
         )
       terrain_feature = self.terrain_encoder(terrain)
-      condition = torch.cat([terrain_feature, command], dim=-1)
+      condition = torch.cat([terrain_feature, proprio], dim=-1)
       t_emb = self.condition_proj(condition)  # (B, W, inner_dim)
       t_emb = self.terrain_pos_encoder(t_emb)
 

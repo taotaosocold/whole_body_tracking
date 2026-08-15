@@ -56,14 +56,8 @@ def export_parkour_policy_as_onnx(
     filename="policy.onnx",
     verbose=False,
 ):
-    """Export a parkour actor with normalization, terrain CNN and cross-attention."""
-    required_attributes = (
-        "obs_normalizer",
-        "cnns",
-        "proprio_embedding",
-        "map_scan_size",
-        "mlp",
-    )
+    """Export a parkour actor with its configured terrain encoder."""
+    required_attributes = ("obs_normalizer", "map_scan_size", "mlp")
     missing_attributes = [name for name in required_attributes if not hasattr(actor, name)]
     if missing_attributes:
         raise TypeError(
@@ -71,7 +65,12 @@ def export_parkour_policy_as_onnx(
             f"missing attributes: {missing_attributes}"
         )
     os.makedirs(path, exist_ok=True)
-    _OnnxParkourPolicyExporter(actor, verbose).export(path, filename)
+    if hasattr(actor, "map_cnn") and hasattr(actor, "terrain_feature_dim"):
+        _OnnxParkourCnnPolicyExporter(actor, verbose).export(path, filename)
+    elif hasattr(actor, "cnns") and hasattr(actor, "proprio_embedding"):
+        _OnnxParkourPolicyExporter(actor, verbose).export(path, filename)
+    else:
+        raise TypeError("Parkour policy exporter received an unsupported terrain encoder.")
 
 
 class _OnnxMotionPolicyExporter(_OnnxPolicyExporter):
@@ -186,6 +185,54 @@ class _OnnxParkourPolicyExporter(_OnnxTerrainPolicyExporter):
     """ONNX wrapper for parkour policies using the terrain encoder architecture."""
 
     pass
+
+
+class _OnnxParkourCnnPolicyExporter(torch.nn.Module):
+    """ONNX wrapper for the parkour CNN+GAP actor."""
+
+    def __init__(self, actor, verbose=False):
+        super().__init__()
+        self.verbose = verbose
+        self.normalizer = copy.deepcopy(actor.obs_normalizer)
+        self.map_cnn = copy.deepcopy(actor.map_cnn)
+        self.actor = copy.deepcopy(actor.mlp)
+        self.deterministic_output = (
+            actor.distribution.as_deterministic_output_module()
+            if actor.distribution is not None
+            else torch.nn.Identity()
+        )
+        self.input_size = actor.obs_dim
+        self.map_scan_size = actor.map_scan_size
+        self.map_length = actor.L
+        self.map_width = actor.W
+        self.coord_dim = actor.coord_dim
+
+    def forward(self, x):
+        x = self.normalizer(x)
+        proprio = x[:, :-self.map_scan_size]
+        terrain = x[:, -self.map_scan_size :].reshape(
+            -1, self.map_width, self.map_length, self.coord_dim
+        )
+        terrain = terrain.permute(0, 3, 1, 2)
+        terrain_feature = self.map_cnn(terrain).flatten(1)
+        latent = torch.cat((proprio, terrain_feature), dim=-1)
+        return self.deterministic_output(self.actor(latent))
+
+    def export(self, path, filename):
+        self.to("cpu")
+        self.eval()
+        obs = torch.zeros(1, self.input_size)
+        torch.onnx.export(
+            self,
+            obs,
+            os.path.join(path, filename),
+            export_params=True,
+            opset_version=18,
+            verbose=self.verbose,
+            input_names=["obs"],
+            output_names=["actions"],
+            dynamic_axes={"obs": {0: "batch"}, "actions": {0: "batch"}},
+        )
 
 
 def list_to_csv_str(arr, *, decimals: int = 3, delimiter: str = ",") -> str:

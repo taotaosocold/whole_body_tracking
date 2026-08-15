@@ -59,7 +59,7 @@ def _diffusion_loss(
   x_0: torch.Tensor,
   num_noise_samples: int,
   terrain: torch.Tensor | None = None,
-  command: torch.Tensor | None = None,
+  proprio: torch.Tensor | None = None,
 ) -> torch.Tensor:
   """DDPM ε-prediction L1 loss with multiple noise samples per data point.
 
@@ -80,15 +80,18 @@ def _diffusion_loss(
   else:
     terrain_exp = None
 
-  if command is not None:
-    command_exp = command[:, None].expand(B, K, *command.shape[1:]).reshape(
-      B * K, *command.shape[1:]
+  if proprio is not None:
+    proprio_exp = proprio[:, None].expand(B, K, *proprio.shape[1:]).reshape(
+      B * K, *proprio.shape[1:]
     )
   else:
-    command_exp = None
+    proprio_exp = None
 
   return F.l1_loss(
-    model(x_t, t, terrain=terrain_exp, command=command_exp), noise
+    model(
+      x_t, t, terrain=terrain_exp, proprio=proprio_exp
+    ),
+    noise,
   )
 
 
@@ -116,10 +119,14 @@ def _save_checkpoint(
   if hasattr(dataset, "has_terrain") and dataset.has_terrain:
     data["t_q_low"] = dataset.t_q_low          # type: ignore[attr-defined]
     data["t_q_high"] = dataset.t_q_high         # type: ignore[attr-defined]
-    data["c_q_low"] = dataset.c_q_low            # type: ignore[attr-defined]
-    data["c_q_high"] = dataset.c_q_high          # type: ignore[attr-defined]
+    data["p_q_low"] = dataset.p_q_low            # type: ignore[attr-defined]
+    data["p_q_high"] = dataset.p_q_high          # type: ignore[attr-defined]
     data["cfg"]["terrain_dim"] = dataset.terrain_dim  # type: ignore[attr-defined]
-    data["cfg"]["command_dim"] = 3
+    data["cfg"]["proprio_dim"] = dataset.proprio_dim  # type: ignore[attr-defined]
+    data["cfg"]["history_size"] = dataset.terrains.shape[1]  # type: ignore[attr-defined]
+    data["cfg"]["future_size"] = dataset.window_size  # type: ignore[attr-defined]
+    data["cfg"]["root_body"] = dataset.root_body  # type: ignore[attr-defined]
+    data["cfg"]["terrain_layout"] = dataset.terrain_layout  # type: ignore[attr-defined]
   if optimizer is not None:
     data["optimizer"] = optimizer.state_dict()
   if ema is not None:
@@ -150,7 +157,7 @@ def pretrain(cfg: PretrainCfg) -> Path:
       data_dir,
       norm_stats_file=cfg.norm_stats_file if cfg.norm_stats_file else None,
       terrain_norm_stats_file=tnorm,
-      command_norm_stats_file=cfg.command_norm_stats_file or None,
+      proprio_norm_stats_file=cfg.proprio_norm_stats_file or None,
     )
     terrain_dim = dataset.terrain_dim
   else:
@@ -194,7 +201,7 @@ def pretrain(cfg: PretrainCfg) -> Path:
     terrain_height=cfg.terrain_height,
     terrain_width=cfg.terrain_width,
     terrain_feature_dim=cfg.terrain_feature_dim,
-    command_dim=cfg.command_dim,
+    proprio_dim=cfg.proprio_dim,
   ).to(device)
   scheduler = DDPMScheduler(
     num_timesteps=cfg.num_timesteps,
@@ -229,17 +236,17 @@ def pretrain(cfg: PretrainCfg) -> Path:
 
     for batch in train_loader:
       if is_conditional:
-        x_0, terrain, command = batch
+        x_0, terrain, proprio = batch
         terrain = terrain.to(device, non_blocking=pin_memory)
-        command = command.to(device, non_blocking=pin_memory)
+        proprio = proprio.to(device, non_blocking=pin_memory)
       else:
         x_0 = batch
         terrain = None
-        command = None
+        proprio = None
       x_0 = x_0.to(device, non_blocking=pin_memory)
 
       loss = _diffusion_loss(
-        model, scheduler, x_0, cfg.num_noise_samples, terrain, command
+        model, scheduler, x_0, cfg.num_noise_samples, terrain, proprio
       )
 
       optimizer.zero_grad()
@@ -301,16 +308,16 @@ def _validate(
   n = 0
   for batch in val_loader:
     if has_terrain:
-      x_0, terrain, command = batch
+      x_0, terrain, proprio = batch
       terrain = terrain.to(device, non_blocking=pin_memory)
-      command = command.to(device, non_blocking=pin_memory)
+      proprio = proprio.to(device, non_blocking=pin_memory)
     else:
       x_0 = batch
       terrain = None
-      command = None
+      proprio = None
     x_0 = x_0.to(device, non_blocking=pin_memory)
     total += _diffusion_loss(
-      model, scheduler, x_0, num_noise_samples, terrain, command
+      model, scheduler, x_0, num_noise_samples, terrain, proprio
     )
     n += 1
   return (total / max(n, 1)).item()

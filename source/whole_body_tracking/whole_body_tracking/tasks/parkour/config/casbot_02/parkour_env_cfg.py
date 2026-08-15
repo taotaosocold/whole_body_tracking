@@ -16,92 +16,20 @@ CONFIG_DIR = Path(__file__).resolve().parent
 
 MOTION_TERRAIN_PAIRS = [
     (
-        "come_up_50cm_box_R_001__A300_with_height_map.npz",
-        "box_come_up_50cm.stl",
-    ),
-    (
-        "come_up_50cm_box_R_001__A300_M_with_height_map.npz",
-        "box_come_up_50cm_M.stl",
-    ),
-    (
-        "obstacles1_subject1_clip1_with_height_map.npz",
-        "stairs_obstacles1_subject1_clip1.stl",
-    ),
-    (
         "obstacles1_subject1_clip1_M_with_height_map.npz",
         "stairs_obstacles1_subject1_clip1_M.stl",
     ),
     (
-        "obstacles1_subject3_clip1_with_height_map.npz",
-        "stairs_obstacles1_subject3_clip1.stl",
+        "walking_with_height_map.npz",
+        "flat_placeholder.stl",
     ),
     (
-        "obstacles1_subject3_clip1_M_with_height_map.npz",
-        "stairs_obstacles1_subject3_clip1_M.stl",
+        "walking_M_with_height_map.npz",
+        "flat_placeholder.stl",
     ),
     (
-        "36_07_poses_with_height_map.npz",
-        "stair_bridge_36_07.stl",
-    ),
-    (
-        "36_07_poses_M_with_height_map.npz",
-        "stair_bridge_36_07_M.stl",
-    ),
-    (
-        "106_07_poses_with_height_map.npz",
-        "stairs_106_07.stl",
-    ),
-    (
-        "106_07_poses_M_with_height_map.npz",
-        "stairs_106_07_M.stl",
-    ),
-    (
-        "114_09_poses_clip1_with_height_map.npz",
-        "stair_bridge_114_09_clip1.stl",
-    ),
-    (
-        "114_09_poses_clip1_M_with_height_map.npz",
-        "stair_bridge_114_09_clip1_M.stl",
-    ),
-    (
-        "13_35_poses_with_height_map.npz",
-        "stairs_13_35.stl",
-    ),
-    (
-        "13_35_poses_M_with_height_map.npz",
-        "stairs_13_35_M.stl",
-    ),
-    (
-        "13_36_poses_with_height_map.npz",
-        "stairs_13_36.stl",
-    ),
-    (
-        "13_36_poses_M_with_height_map.npz",
-        "stairs_13_36_M.stl",
-    ),
-    (
-        "141_07_poses_with_height_map.npz",
-        "stairs_141_07.stl",
-    ),
-    (
-        "141_07_poses_M_with_height_map.npz",
-        "stairs_141_07_M.stl",
-    ),
-    (
-        "141_08_poses_with_height_map.npz",
-        "stairs_141_08.stl",
-    ),
-    (
-        "141_08_poses_M_with_height_map.npz",
-        "stairs_141_08_M.stl",
-    ),
-    (
-        "143_17_poses_with_height_map.npz",
-        "stairs_143_17.stl",
-    ),
-    (
-        "143_17_poses_M_with_height_map.npz",
-        "stairs_143_17_M.stl",
+        "obstacles1_subject1_clip1_with_height_map.npz",
+        "stairs_obstacles1_subject1_clip1.stl",
     ),
 ]
 
@@ -156,7 +84,7 @@ class CASBOTParkourEnvCfg(ParkourEnvCfg):
             asset_name="robot",
             resampling_time_range=(1.0e9, 1.0e9),
             debug_vis=True,
-            motion_folder=str(CONFIG_DIR / "moton_with_height_map"),
+            motion_folder=str(CONFIG_DIR / "motion_with_height_map"),
             motion_files=[motion_name for motion_name, _ in MOTION_TERRAIN_PAIRS],
             motion_terrain_columns=motion_terrain_columns,
             anchor_body_name="waist_yaw_link",
@@ -180,12 +108,6 @@ class CASBOTParkourEnvCfg(ParkourEnvCfg):
             ".*ankle.*",
             ".*wrist.*",
         ]
-        self.events.physics_material = None
-        self.events.add_joint_default_pos = None
-        self.events.base_com = None
-        self.events.randomize_ray_offsets = None
-        self.events.randomize_actuator_gains = None
-        self.events.randomize_rigid_body_mass = None
 
 
 @configclass

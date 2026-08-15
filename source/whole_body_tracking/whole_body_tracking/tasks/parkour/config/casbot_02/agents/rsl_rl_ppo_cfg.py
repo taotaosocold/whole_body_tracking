@@ -2,6 +2,7 @@ from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 from whole_body_tracking.tasks.locomotion.velocity.terrain_encoder import RslRlTerrainEncoderModelCfg
+from whole_body_tracking.tasks.parkour.cnn_encoder import RslRlParkourCnnModelCfg
 
 
 @configclass
@@ -51,3 +52,32 @@ class CASBOTParkourPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 @configclass
 class CASBOTParkourNoDRPPORunnerCfg(CASBOTParkourPPORunnerCfg):
     experiment_name = "CASBOT_parkour_no_dr"
+
+
+@configclass
+class CASBOTParkourCnnPPORunnerCfg(CASBOTParkourPPORunnerCfg):
+    """Parkour PPO using independent CNN+GAP encoders for actor and critic."""
+
+    experiment_name = "CASBOT_parkour_cnn"
+    actor = RslRlParkourCnnModelCfg(
+        hidden_dims=[1024, 512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        stochastic=True,
+        init_noise_std=1.0,
+        noise_std_type="scalar",
+        state_dependent_std=False,
+    )
+    critic = RslRlParkourCnnModelCfg(
+        hidden_dims=[1024, 512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        stochastic=False,
+        init_noise_std=0.0,
+        noise_std_type="scalar",
+        state_dependent_std=False,
+    )
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.share_cnn_encoders = False

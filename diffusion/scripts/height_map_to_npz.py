@@ -3,9 +3,9 @@
 Each input NPZ contains per-frame G1 motion data + height_map (terrain).  This
 script windows both the motion and terrain data, producing output NPZs with:
 
-  motion_windows  (N, window_size, 80) — CASBOT motion features
-  terrain         (N, window_size, 693) — z-only 33×21 terrain grid
-  command         (N, window_size, 3)   — root-local [vx, vy, wz]
+  motion_windows  (N, future_size, 80)  — future CASBOT motion targets
+  terrain         (N, history_size, 693) — historical terrain
+  proprio         (N, history_size, 31) — joint q25 + target-heading rot6d
 
 Motion features are anchored to the LAST window frame's yaw-only local frame
 (identical to csv_to_npz.py).  Terrain stays in each frame's own local frame.
@@ -37,14 +37,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from source.utils import detect_device
 
-# ── Body indices into body_*_w arrays (world excluded, so MJCF idx - 1) ──
-PELVIS_IDX = 0
-EE_IDXS = (6, 12, 13, 19, 25)  # ankles, waist proxy, wrists
+# ── IsaacLab articulation body order (breadth-first URDF traversal) ──
+# body_*_w is not in MuJoCo XML depth-first order.
+ROOT_BODY_IDX = 3  # waist_yaw_link
+ROOT_BODY_NAME = "waist_yaw_link"
+TERRAIN_LAYOUT = "root_z_minus_terrain_z"
+EE_IDXS = (22, 23, 11, 24, 25)  # left/right ankle, head, left/right wrist
 NUM_JOINTS = 25
 NUM_EE = len(EE_IDXS)
 
 # ── Feature dimension breakdown ──
 FEATURE_DIMS = (3, 6, NUM_JOINTS, NUM_JOINTS, NUM_EE * 3, 3, 3)  # 80 total
+PROPRIO_DIMS = (NUM_JOINTS, 6)
 
 # ── Terrain grid ──
 GRID_X = 33
@@ -67,8 +71,10 @@ class Cfg:
     """Directory of input NPZ files (height-map motion data)."""
     output_dir: str = "datasets/conditional_npz"
     """Directory to write output windowed NPZ files."""
-    window_size: int = 4
-    """Number of frames per window."""
+    history_size: int = 4
+    """Number of past/current condition frames."""
+    future_size: int = 10
+    """Number of future motion frames."""
     stride: int = 1
     """Stride between consecutive windows."""
     fps: int = 50
@@ -100,28 +106,35 @@ def _compute_windows(
     joint_pos: torch.Tensor,      # (T, 25)
     joint_vel: torch.Tensor,      # (T, 25)
     height_map: torch.Tensor,     # (T, 693), world terrain z only
-    window_size: int,
+    history_size: int,
+    future_size: int,
     stride: int,
-) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
-    """Return motion, terrain-z and root-local velocity-command windows.
+) -> tuple[
+    torch.Tensor | None,
+    torch.Tensor | None,
+    torch.Tensor | None,
+]:
+    """Return future motion and historical terrain/joint-heading conditions.
 
     Motion features anchored to the LAST frame's yaw-only local frame.
     root_pos z is terrain-relative (height above terrain at pelvis xy).
-    Terrain stays in each frame's own local frame.
+    Terrain is stored as root height minus terrain height for every ray.
     """
     T = base_pos.shape[0]
-    if T < window_size:
+    total_size = history_size + future_size
+    if T < total_size:
         return None, None, None
 
     E = ee_pos.shape[1]
     J = joint_pos.shape[1]
 
-    starts = torch.arange(0, T - window_size + 1, stride, device=base_pos.device, dtype=torch.long)
-    offsets = torch.arange(window_size, device=base_pos.device, dtype=torch.long)
-    win_idx = starts[:, None] + offsets[None, :]  # (N, W)
-    N, W = win_idx.shape[0], window_size
-
-    flat_idx = win_idx.reshape(-1)
+    starts = torch.arange(0, T - total_size + 1, stride, device=base_pos.device, dtype=torch.long)
+    offsets = torch.arange(total_size, device=base_pos.device, dtype=torch.long)
+    all_idx = starts[:, None] + offsets[None, :]
+    history_idx = all_idx[:, :history_size]
+    future_idx = all_idx[:, history_size:]
+    N, H, W = all_idx.shape[0], history_size, future_size
+    flat_idx = future_idx.reshape(-1)
 
     # Gather motion data
     win_base_pos = base_pos.index_select(0, flat_idx).reshape(N, W, 3)
@@ -132,9 +145,10 @@ def _compute_windows(
     win_joint = joint_pos.index_select(0, flat_idx).reshape(N, W, J)
     win_joint_vel = joint_vel.index_select(0, flat_idx).reshape(N, W, J)
 
-    # ── Anchor to last frame's yaw-only local frame ──
-    anchor_pos_T = win_base_pos[:, -1, :]          # (N, 3)
-    anchor_quat_T = win_base_quat[:, -1, :]        # (N, 4)
+    # Future targets are anchored to the latest available history frame.
+    current_idx = history_idx[:, -1]
+    anchor_pos_T = base_pos.index_select(0, current_idx)
+    anchor_quat_T = base_quat.index_select(0, current_idx)
     yaw_T = yaw_quat(anchor_quat_T)                # (N, 4)
     heading_inv_T_WF = quat_conjugate(yaw_T)[:, None, :].expand(N, W, 4).reshape(-1, 4)
     yaw_T_W = yaw_T[:, None, :].expand(N, W, 4).reshape(-1, 4)
@@ -143,10 +157,9 @@ def _compute_windows(
     root_offset = win_base_pos - anchor_pos_T[:, None, :]  # (N, W, 3)
     root_pos_local = quat_apply_inverse(yaw_T_W, root_offset.reshape(-1, 3)).reshape(N, W, 3)
     root_pos_local = root_pos_local.clone()
-    # Terrain height at pelvis xy = center of the 17×11 grid (directly below pelvis).
-    # Grid is pelvis-centered, yaw-aligned → center index (8, 5) = 8*11+5 = 93.
-    win_terrain = height_map.index_select(0, flat_idx).reshape(N, W, HEIGHT_MAP_DIM)
-    terrain_z = win_terrain[:, :, GRID_X // 2 * GRID_Y + GRID_Y // 2]  # (N, W)
+    # Terrain height directly below the waist: center of the 33×21 grid.
+    future_terrain = height_map.index_select(0, flat_idx).reshape(N, W, HEIGHT_MAP_DIM)
+    terrain_z = future_terrain[:, :, GRID_X // 2 * GRID_Y + GRID_Y // 2]
     root_pos_local[..., 2] = win_base_pos[..., 2] - terrain_z
 
     # root_rot: heading_inv(T) ⊗ root_quat[t] → 6D tan-norm
@@ -164,18 +177,18 @@ def _compute_windows(
     lin_vel_local = quat_apply_inverse(yaw_T_W, win_base_lin_vel.reshape(-1, 3)).reshape(N, W, 3)
     ang_vel_local = quat_apply_inverse(yaw_T_W, win_base_ang_vel.reshape(-1, 3)).reshape(N, W, 3)
 
-    # Hand-controller condition uses each frame's own heading frame, rather
-    # than the last-frame anchor used by the motion representation.
-    frame_yaw = yaw_quat(win_base_quat.reshape(-1, 4))
-    command_lin = quat_apply_inverse(
-        frame_yaw, win_base_lin_vel.reshape(-1, 3)
-    ).reshape(N, W, 3)
-    command_ang = quat_apply_inverse(
-        frame_yaw, win_base_ang_vel.reshape(-1, 3)
-    ).reshape(N, W, 3)
-    command = torch.stack(
-        [command_lin[..., 0], command_lin[..., 1], command_ang[..., 2]], dim=-1
-    )
+    # Historical joint configuration plus desired yaw.  The desired yaw is
+    # the final future frame's yaw, expressed relative to every history frame.
+    hist_flat = history_idx.reshape(-1)
+    hist_quat = base_quat.index_select(0, hist_flat)
+    hist_joint = joint_pos.index_select(0, hist_flat).reshape(N, H, J)
+    hist_yaw = yaw_quat(hist_quat).reshape(N, H, 4)
+    target_yaw = yaw_quat(win_base_quat[:, -1])[:, None, :].expand(N, H, 4)
+    relative_target_yaw = quat_mul(
+        quat_conjugate(hist_yaw.reshape(-1, 4)), target_yaw.reshape(-1, 4)
+    ).reshape(N, H, 4)
+    target_heading_6d = _tan_norm_from_quat(relative_target_yaw)
+    proprio = torch.cat([hist_joint, target_heading_6d], dim=-1)
 
     motion = torch.cat(
         [
@@ -190,7 +203,12 @@ def _compute_windows(
         dim=-1,
     )  # (N, W, 80)
 
-    return motion, win_terrain, command
+    history_terrain_w = height_map.index_select(0, hist_flat).reshape(
+        N, H, HEIGHT_MAP_DIM
+    )
+    history_root_z = base_pos.index_select(0, hist_flat)[..., 2].reshape(N, H, 1)
+    history_terrain = history_root_z - history_terrain_w
+    return motion, history_terrain, proprio
 
 
 def main(cfg: Cfg) -> None:
@@ -212,7 +230,7 @@ def main(cfg: Cfg) -> None:
     total_motion_dim = sum(FEATURE_DIMS)
     print(f"Files: {len(npz_files)} in {in_dir}")
     print(f"Output: {out_dir}")
-    print(f"Window: size={cfg.window_size} stride={cfg.stride}")
+    print(f"Window: history={cfg.history_size} future={cfg.future_size} stride={cfg.stride}")
     print(f"Motion dim: {total_motion_dim} (= {' + '.join(str(d) for d in FEATURE_DIMS)})")
     print(f"Terrain dim: {HEIGHT_MAP_DIM} (= {GRID_X}×{GRID_Y} grid)")
 
@@ -225,7 +243,7 @@ def main(cfg: Cfg) -> None:
 
         # Validate
         T = data["joint_pos"].shape[0]
-        root_xy = data["body_pos_w"][:, PELVIS_IDX, :2]
+        root_xy = data["body_pos_w"][:, ROOT_BODY_IDX, :2]
         jump_indices = np.flatnonzero(
             np.linalg.norm(np.diff(root_xy, axis=0), axis=-1) > cfg.max_root_step
         )
@@ -236,16 +254,17 @@ def main(cfg: Cfg) -> None:
                 f"  [WARN] root discontinuity after frame {T - 1}; "
                 f"truncating {original_T} -> {T} frames"
             )
-        if T < cfg.window_size:
-            print(f"  [SKIP] too short ({T} < {cfg.window_size})")
+        total_size = cfg.history_size + cfg.future_size
+        if T < total_size:
+            print(f"  [SKIP] too short ({T} < {total_size})")
             continue
 
         # Extract motion data → torch tensors on device
         device = torch.device(cfg.device)
-        base_pos = torch.from_numpy(data["body_pos_w"][:T, PELVIS_IDX, :].astype(np.float32)).to(device)
-        base_quat = torch.from_numpy(data["body_quat_w"][:T, PELVIS_IDX, :].astype(np.float32)).to(device)
-        base_lin_vel = torch.from_numpy(data["body_lin_vel_w"][:T, PELVIS_IDX, :].astype(np.float32)).to(device)
-        base_ang_vel = torch.from_numpy(data["body_ang_vel_w"][:T, PELVIS_IDX, :].astype(np.float32)).to(device)
+        base_pos = torch.from_numpy(data["body_pos_w"][:T, ROOT_BODY_IDX, :].astype(np.float32)).to(device)
+        base_quat = torch.from_numpy(data["body_quat_w"][:T, ROOT_BODY_IDX, :].astype(np.float32)).to(device)
+        base_lin_vel = torch.from_numpy(data["body_lin_vel_w"][:T, ROOT_BODY_IDX, :].astype(np.float32)).to(device)
+        base_ang_vel = torch.from_numpy(data["body_ang_vel_w"][:T, ROOT_BODY_IDX, :].astype(np.float32)).to(device)
 
         ee_pos_list = [data["body_pos_w"][:T, idx, :].astype(np.float32) for idx in EE_IDXS]
         ee_pos = torch.from_numpy(np.stack(ee_pos_list, axis=1)).to(device)  # (T, E, 3)
@@ -265,14 +284,18 @@ def main(cfg: Cfg) -> None:
             )
         height_map = torch.from_numpy(elevation_xyz[..., 2]).to(device)
 
-        motion, terrain, command = _compute_windows(
+        motion, terrain, proprio = _compute_windows(
             base_pos, base_quat, base_lin_vel, base_ang_vel,
             ee_pos, joint_pos, joint_vel, height_map,
-            cfg.window_size, cfg.stride,
+            cfg.history_size, cfg.future_size, cfg.stride,
         )
 
-        if motion is None or terrain is None or command is None:
-            print(f"  [SKIP] too short for window_size={cfg.window_size}")
+        if (
+            motion is None
+            or terrain is None
+            or proprio is None
+        ):
+            print(f"  [SKIP] too short for history+future={total_size}")
             continue
 
         n_windows = motion.shape[0]
@@ -283,17 +306,22 @@ def main(cfg: Cfg) -> None:
             out_path,
             motion_windows=motion.cpu().numpy().astype(np.float32),
             terrain=terrain.cpu().numpy().astype(np.float32),
-            command=command.cpu().numpy().astype(np.float32),
+            proprio=proprio.cpu().numpy().astype(np.float32),
             fps=np.array([cfg.fps], dtype=np.float32),
-            window_size=np.array([cfg.window_size], dtype=np.int32),
+            history_size=np.array([cfg.history_size], dtype=np.int32),
+            future_size=np.array([cfg.future_size], dtype=np.int32),
             stride=np.array([cfg.stride], dtype=np.int32),
             feature_dims=np.array(FEATURE_DIMS, dtype=np.int32),
+            proprio_dims=np.array(PROPRIO_DIMS, dtype=np.int32),
+            diffusion_format_version=np.array(3, dtype=np.int32),
+            root_body=np.array(ROOT_BODY_NAME),
+            terrain_layout=np.array(TERRAIN_LAYOUT),
             # Actual flattened array layout for IsaacLab ordering="xy": Y x X.
             terrain_shape=np.array([GRID_Y, GRID_X], dtype=np.int32),
         )
         print(
             f"  saved {out_path.name}: motion={tuple(motion.shape)} "
-            f"terrain={tuple(terrain.shape)} command={tuple(command.shape)}"
+            f"terrain={tuple(terrain.shape)} proprio={tuple(proprio.shape)}"
         )
 
     print(f"\nDone. Total windows: {total_windows}")

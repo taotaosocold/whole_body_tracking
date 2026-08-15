@@ -107,8 +107,7 @@ class ParkourObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
-        motion_anchor_pos_b = ObsTerm(func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25))
-        motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05))
+        projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
@@ -126,7 +125,7 @@ class ParkourObservationsCfg:
     class PrivilegedCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         motion_anchor_pos_b = ObsTerm(func=mdp.motion_anchor_pos_b, params={"command_name": "motion"})
-        motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"})
+        projected_gravity = ObsTerm(func=mdp.projected_gravity)
         body_pos = ObsTerm(func=mdp.robot_body_pos_b, params={"command_name": "motion"})
         body_ori = ObsTerm(func=mdp.robot_body_ori_b, params={"command_name": "motion"})
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
@@ -311,6 +310,30 @@ class ParkourRewardsCfg:
             "threshold": 1.0,
         },
     )
+    foot_edge_support = RewTerm(
+        func=parkour_mdp.foot_edge_support_penalty,
+        weight=-5.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=(
+                    "left_leg_ankle_roll_link",
+                    "right_leg_ankle_roll_link",
+                ),
+            ),
+            "contact_sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=(
+                    "left_leg_ankle_roll_link",
+                    "right_leg_ankle_roll_link",
+                ),
+            ),
+            "height_sensor_cfg": SceneEntityCfg("height_scanner"),
+            "contact_threshold": 5.0,
+            "support_tolerance": 0.03,
+            "max_horizontal_query_distance": 0.06,
+        },
+    )
     applied_torque_limits_by_ratio = RewTerm(
         func=parkour_mdp.applied_torque_limits_by_ratio,
         weight=-0.05,
@@ -361,7 +384,7 @@ class ParkourCurriculumCfg:
 class ParkourEnvCfg(ManagerBasedRLEnvCfg):
     """Base configuration for motion-matched static-terrain tracking."""
 
-    scene: ParkourSceneCfg = ParkourSceneCfg(num_envs=2048, env_spacing=2.5)
+    scene: ParkourSceneCfg = ParkourSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: ParkourObservationsCfg = ParkourObservationsCfg()
     actions: ParkourActionsCfg = ParkourActionsCfg()
     commands: ParkourCommandsCfg = ParkourCommandsCfg()

@@ -42,9 +42,9 @@ class _ConditionalDenoiser(nn.Module):
     x_t: torch.Tensor,
     timestep: torch.Tensor,
     terrain: torch.Tensor,
-    command: torch.Tensor,
+    proprio: torch.Tensor,
   ) -> torch.Tensor:
-    return self.model(x_t, timestep, terrain=terrain, command=command)
+    return self.model(x_t, timestep, terrain=terrain, proprio=proprio)
 
 
 def _build_model(checkpoint: dict[str, Any], use_ema: bool) -> DiffusionDenoiser:
@@ -67,7 +67,7 @@ def _build_model(checkpoint: dict[str, Any], use_ema: bool) -> DiffusionDenoiser
     terrain_height=int(cfg.get("terrain_height", 21)),
     terrain_width=int(cfg.get("terrain_width", 33)),
     terrain_feature_dim=int(cfg.get("terrain_feature_dim", 23)),
-    command_dim=int(cfg.get("command_dim", 3)),
+    proprio_dim=int(cfg.get("proprio_dim", 31)),
   )
   state_key = "model_ema" if use_ema else "model"
   if state_key not in checkpoint:
@@ -86,19 +86,20 @@ def _export_onnx(
   window = int(cfg["window_size"])
   feature_dim = int(cfg["feature_dim"])
   terrain_dim = int(cfg["terrain_dim"])
-  command_dim = int(cfg.get("command_dim", 3))
+  proprio_dim = int(cfg.get("proprio_dim", 31))
+  history = int(cfg.get("history_size", 4))
   inputs = (
     torch.randn(batch, window, feature_dim, dtype=torch.float32),
     torch.zeros(batch, dtype=torch.int64),
-    torch.randn(batch, window, terrain_dim, dtype=torch.float32),
-    torch.zeros(batch, window, command_dim, dtype=torch.float32),
+    torch.randn(batch, history, terrain_dim, dtype=torch.float32),
+    torch.randn(batch, history, proprio_dim, dtype=torch.float32),
   )
   with torch.inference_mode():
     torch.onnx.export(
       model,
       inputs,
       str(output_path),
-      input_names=["x_t", "timestep", "terrain", "command"],
+      input_names=["x_t", "timestep", "terrain", "proprio"],
       output_names=["noise"],
       opset_version=opset,
       do_constant_folding=True,
@@ -107,22 +108,42 @@ def _export_onnx(
   return inputs
 
 
+def _validate_coordinate_semantics(cfg: dict[str, Any]) -> tuple[str, str]:
+  root_body = cfg.get("root_body")
+  terrain_layout = cfg.get("terrain_layout")
+  if root_body != "waist_yaw_link" or terrain_layout != "root_z_minus_terrain_z":
+    raise ValueError(
+      "Checkpoint lacks the required format-v3 coordinate semantics: "
+      f"root_body={root_body!r}, terrain_layout={terrain_layout!r}. "
+      "Rebuild the dataset and retrain; do not re-export an old checkpoint."
+    )
+  return str(root_body), str(terrain_layout)
+
+
 def _embed_metadata(
   onnx_path: Path,
   checkpoint: dict[str, Any],
   cfg: dict[str, Any],
 ) -> None:
   """Embed sampling configuration and normalization arrays in the ONNX file."""
+  root_body, terrain_layout = _validate_coordinate_semantics(cfg)
   model = onnx.load(str(onnx_path), load_external_data=True)
   metadata = {
-    "diffusion.format_version": "1",
+    "diffusion.format_version": "3",
     "diffusion.num_timesteps": str(int(cfg.get("num_timesteps", 50))),
     "diffusion.window_size": str(int(cfg["window_size"])),
     "diffusion.feature_dim": str(int(cfg["feature_dim"])),
     "diffusion.terrain_dim": str(int(cfg["terrain_dim"])),
-    "diffusion.command_dim": str(int(cfg.get("command_dim", 3))),
+    "diffusion.proprio_dim": str(int(cfg.get("proprio_dim", 31))),
+    "diffusion.history_size": str(int(cfg.get("history_size", 4))),
+    "diffusion.future_size": str(int(cfg.get("future_size", cfg["window_size"]))),
+    "diffusion.proprio_layout": "joint_pos,target_heading_rot6d",
+    "diffusion.root_body": str(root_body),
+    "diffusion.terrain_layout": str(terrain_layout),
   }
-  for key in ("q_low", "q_high", "t_q_low", "t_q_high", "c_q_low", "c_q_high"):
+  for key in (
+    "q_low", "q_high", "t_q_low", "t_q_high", "p_q_low", "p_q_high",
+  ):
     if key not in checkpoint:
       raise KeyError(f"Checkpoint does not contain required normalization data {key!r}")
     values = np.asarray(checkpoint[key], dtype=np.float32).tolist()
@@ -168,6 +189,7 @@ def main() -> None:
 
   checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
   cfg = checkpoint["cfg"]
+  _validate_coordinate_semantics(cfg)
   model = _ConditionalDenoiser(_build_model(checkpoint, args.use_ema)).eval()
 
   print(f"[INFO] Exporting ONNX: {onnx_path}")

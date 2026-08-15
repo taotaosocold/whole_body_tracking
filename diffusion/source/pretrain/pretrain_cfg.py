@@ -17,8 +17,8 @@ class PretrainCfg:
   """Path to q01/q99 quantile stats from compute_norm_stats.py."""
   terrain_norm_stats_file: str = ""
   """Path to terrain q01/q99 quantile stats (conditional training only)."""
-  command_norm_stats_file: str = ""
-  """Path to local [vx, vy, wz] q01/q99 statistics (optional)."""
+  proprio_norm_stats_file: str = ""
+  """Path to historical proprio q01/q99 statistics (optional)."""
   train_split: float = 0.9
 
   # Model. ``d_model = nhead · head_dim`` is the DiT inner dim; FF inner
@@ -32,7 +32,7 @@ class PretrainCfg:
   terrain_height: int = 21
   terrain_width: int = 33
   terrain_feature_dim: int = 23
-  command_dim: int = 3
+  proprio_dim: int = 31
 
   # Diffusion
   num_timesteps: int = 50

@@ -1,8 +1,8 @@
 """Generate and visualize terrain/velocity-conditioned CASBOT motion.
 
 Adapted from generate_viz.py for CasBot 25-DOF:
-The GUI selects a recorded 33x21 terrain window and exposes local
-``vx``, ``vy`` and ``wz`` controls, matching the training K/V condition.
+The GUI selects a recorded condition window and exposes a continuous target
+heading relative to the latest historical yaw.
 
 Usage:
   python diffusion/scripts/casbot_generate_viz_terrain.py \
@@ -206,6 +206,9 @@ class _CasbotSim:
         "Use the CASBOT MuJoCo XML, not the URDF directly."
       )
     self.data = mujoco.MjData(self.model)
+    self._waist_body_id = mujoco.mj_name2id(
+      self.model, mujoco.mjtObj.mjOBJ_BODY, "waist_yaw_link"
+    )
     # Joint qpos addresses for the 25 actuated joints.
     self._joint_qposadr = np.array(
       [
@@ -219,15 +222,32 @@ class _CasbotSim:
 
   def write_pose(
     self,
-    pelvis_pos: np.ndarray,    # (3,)
-    pelvis_quat_wxyz: np.ndarray,  # (4,)
+    pelvis_pos: np.ndarray,        # desired waist_yaw_link position, (3,)
+    pelvis_quat_wxyz: np.ndarray,  # desired waist_yaw_link orientation, (4,)
     joint_pos: np.ndarray,     # (25,)
   ) -> None:
-    """Write a single-frame pose to mujoco data and run FK."""
+    """Write a pose whose generated root is ``waist_yaw_link``.
+
+    MuJoCo's freejoint belongs to ``base_link``.  Align that freejoint through
+    FK so the resulting waist pose, rather than the base pose, equals the
+    diffusion root target.
+    """
     self.data.qpos[0:3] = pelvis_pos
     self.data.qpos[3:7] = pelvis_quat_wxyz
     self.data.qpos[self._joint_qposadr] = joint_pos
     self.data.qvel[:] = 0.0
+    mujoco.mj_forward(self.model, self.data)
+
+    current_waist_quat = self.data.xquat[self._waist_body_id].copy()
+    current_waist_quat[1:] *= -1.0
+    delta_quat = np.empty(4, dtype=np.float64)
+    mujoco.mju_mulQuat(delta_quat, pelvis_quat_wxyz, current_waist_quat)
+    corrected_base_quat = np.empty(4, dtype=np.float64)
+    mujoco.mju_mulQuat(corrected_base_quat, delta_quat, self.data.qpos[3:7])
+    self.data.qpos[3:7] = corrected_base_quat
+    mujoco.mj_forward(self.model, self.data)
+
+    self.data.qpos[0:3] += pelvis_pos - self.data.xpos[self._waist_body_id]
     mujoco.mj_forward(self.model, self.data)
 
 
@@ -241,19 +261,15 @@ class Cfg:
   ckpt_path: str = ""
   """Path to a local SMP diffusion checkpoint .pt file."""
   data_dir: str = "diffusion/source/conditional_npz"
-  """Directory containing windowed terrain/command NPZ files."""
+  """Directory containing windowed terrain/proprio NPZ files."""
   model_path: str = _DEFAULT_MODEL
   """Path to the floating-base CASBOT MuJoCo XML."""
   device: str = ""
   """Compute device. Empty = auto."""
   fps: float = 50.0
   """Playback frame rate."""
-  vx: float = 0.0
-  """Initial local forward velocity command."""
-  vy: float = 0.0
-  """Initial local lateral velocity command."""
-  wz: float = 0.0
-  """Initial local yaw-rate command."""
+  heading_deg: float = 0.0
+  """Desired yaw relative to the latest historical frame."""
 
 
 def _build_model_and_scheduler(
@@ -271,7 +287,7 @@ def _build_model_and_scheduler(
     terrain_height=cfg.get("terrain_height", GRID_Y),
     terrain_width=cfg.get("terrain_width", GRID_X),
     terrain_feature_dim=cfg.get("terrain_feature_dim", 23),
-    command_dim=cfg.get("command_dim", 3),
+    proprio_dim=cfg.get("proprio_dim", 31),
   ).to(device)
   state = ckpt.get("model_ema") or ckpt["model"]
   model.load_state_dict(state)
@@ -296,16 +312,31 @@ def _quantile_normalize(
   return 2.0 * (x - low) / (high - low) - 1.0
 
 
-def _load_condition_windows(data_dir: str) -> tuple[np.ndarray, np.ndarray]:
-  terrains, commands = [], []
+def _load_condition_windows(
+  data_dir: str,
+) -> tuple[np.ndarray, np.ndarray]:
+  terrains, proprios = [], []
   for path in sorted(Path(data_dir).glob("*.npz")):
     with np.load(path, allow_pickle=False) as data:
-      if "terrain" in data and "command" in data:
+      if "terrain" in data and "proprio" in data:
         terrains.append(data["terrain"].astype(np.float32))
-        commands.append(data["command"].astype(np.float32))
+        proprios.append(data["proprio"].astype(np.float32))
   if not terrains:
     raise FileNotFoundError(f"No conditional NPZ files found in {data_dir}")
-  return np.concatenate(terrains), np.concatenate(commands)
+  return np.concatenate(terrains), np.concatenate(proprios)
+
+
+def _set_target_heading(proprio: np.ndarray, heading_deg: float) -> np.ndarray:
+  """Replace heading rot6d while preserving each history frame's yaw offset."""
+  result = proprio.copy()
+  recorded = np.arctan2(result[:, 26], result[:, 25])
+  history_to_current = recorded - recorded[-1]
+  angles = history_to_current + np.deg2rad(heading_deg)
+  result[:, 25:31] = 0.0
+  result[:, 25] = np.cos(angles)
+  result[:, 26] = np.sin(angles)
+  result[:, 30] = 1.0
+  return result
 
 
 @torch.no_grad()
@@ -316,21 +347,21 @@ def _run_generate(
   q_high: np.ndarray,
   t_q_low: np.ndarray,
   t_q_high: np.ndarray,
-  c_q_low: np.ndarray,
-  c_q_high: np.ndarray,
+  p_q_low: np.ndarray,
+  p_q_high: np.ndarray,
   terrain_raw: torch.Tensor,
-  command_raw: torch.Tensor,
+  proprio_raw: torch.Tensor,
   window_size: int,
   feature_dim: int,
   device: torch.device,
 ) -> torch.Tensor:
   """Conditional DDPM sampling; returns one denormalized motion window."""
   terrain = _quantile_normalize(terrain_raw, t_q_low, t_q_high)
-  command = _quantile_normalize(command_raw, c_q_low, c_q_high)
+  proprio = _quantile_normalize(proprio_raw, p_q_low, p_q_high)
   x_t = torch.randn(1, window_size, feature_dim, device=device)
   for t in reversed(range(scheduler.num_timesteps)):
     t_batch = torch.full((1,), t, dtype=torch.long, device=device)
-    eps = model(x_t, t_batch, terrain=terrain, command=command)
+    eps = model(x_t, t_batch, terrain=terrain, proprio=proprio)
     x_t = scheduler.step(eps, x_t, t)
   q_low_t = torch.from_numpy(q_low).float().to(device)
   q_high_t = torch.from_numpy(q_high).float().to(device)
@@ -348,9 +379,9 @@ def main(cfg: Cfg) -> None:
 
   feature_dim = int(ckpt["cfg"]["feature_dim"])
   window_size = int(ckpt["cfg"]["window_size"])
-  if feature_dim != 80 or window_size != 4:
+  if feature_dim != 80 or window_size != 10:
     raise ValueError(
-      f"This visualizer expects the new CASBOT (W=4,F=80) checkpoint; "
+      f"This visualizer expects the CASBOT (Q=10,F=80) checkpoint; "
       f"got W={window_size}, F={feature_dim}"
     )
   print(
@@ -366,13 +397,16 @@ def main(cfg: Cfg) -> None:
   anchor_pelvis_pos = np.array(sim.model.qpos0[0:3], dtype=np.float32)
   anchor_pelvis_quat = np.array(sim.model.qpos0[3:7], dtype=np.float32)
 
-  all_terrains, recorded_commands = _load_condition_windows(cfg.data_dir)
+  all_terrains, all_proprios = _load_condition_windows(cfg.data_dir)
   terrain_index = {"value": 0}
   print(f"Loaded {len(all_terrains)} condition windows from {cfg.data_dir}")
 
-  def run(terrain_raw: np.ndarray, command_xyz: np.ndarray) -> tuple:
+  def run(
+    terrain_raw: np.ndarray,
+    proprio_raw: np.ndarray,
+  ) -> tuple:
     terrain_tensor = torch.from_numpy(terrain_raw[None]).to(device)
-    command_tensor = torch.from_numpy(command_xyz[None]).to(device)
+    proprio_tensor = torch.from_numpy(proprio_raw[None]).to(device)
     pred_denorm = _run_generate(
       model,
       scheduler,
@@ -380,10 +414,10 @@ def main(cfg: Cfg) -> None:
       ckpt["q_high"],
       ckpt["t_q_low"],
       ckpt["t_q_high"],
-      ckpt["c_q_low"],
-      ckpt["c_q_high"],
+      ckpt["p_q_low"],
+      ckpt["p_q_high"],
       terrain_tensor,
-      command_tensor,
+      proprio_tensor,
       window_size,
       feature_dim,
       device,
@@ -393,8 +427,8 @@ def main(cfg: Cfg) -> None:
       torch.from_numpy(anchor_pelvis_pos),
       torch.from_numpy(anchor_pelvis_quat),
     )
-    # Generated root-z is relative to the terrain below the grid center.
-    p_pos[:, 2] += terrain_tensor[0, :, CENTER_IDX].cpu()
+    # root_pos.z is already the generated terrain-relative root height.  Use
+    # it directly for this local visualization; do not restore world height.
     ee_pos = _window_to_ee_trajectories(pred_denorm, p_pos, p_quat)
     return (
       p_pos.cpu().numpy(),
@@ -402,13 +436,12 @@ def main(cfg: Cfg) -> None:
       p_joint.cpu().numpy(),
       ee_pos.cpu().numpy(),
       terrain_raw,
-      command_xyz,
     )
 
-  initial_command = np.tile(
-    np.array([cfg.vx, cfg.vy, cfg.wz], dtype=np.float32), (window_size, 1)
-  )
-  state: dict = {"pred": run(all_terrains[0], initial_command)}
+  initial_proprio = _set_target_heading(all_proprios[0], cfg.heading_deg)
+  state: dict = {
+    "pred": run(all_terrains[0], initial_proprio)
+  }
 
   server = viser.ViserServer()
   viser_scene = MjlabViserScene(server, sim.model, num_envs=1)
@@ -434,14 +467,12 @@ def main(cfg: Cfg) -> None:
     play_btn = server.gui.add_button("Play / Pause")
     resample_btn = server.gui.add_button("Resample")
     next_terrain_btn = server.gui.add_button("Next Terrain")
-    vx_slider = server.gui.add_slider(
-      "vx local (m/s)", min=-3.0, max=3.0, step=0.05, initial_value=cfg.vx
-    )
-    vy_slider = server.gui.add_slider(
-      "vy local (m/s)", min=-2.0, max=2.0, step=0.05, initial_value=cfg.vy
-    )
-    wz_slider = server.gui.add_slider(
-      "wz local (rad/s)", min=-3.0, max=3.0, step=0.05, initial_value=cfg.wz
+    heading_slider = server.gui.add_slider(
+      "target heading (deg)",
+      min=-180.0,
+      max=180.0,
+      step=5.0,
+      initial_value=cfg.heading_deg,
     )
 
   playing = {"v": True}
@@ -452,27 +483,21 @@ def main(cfg: Cfg) -> None:
 
   @resample_btn.on_click
   def _(_evt) -> None:
-    command = np.tile(
-      np.array([vx_slider.value, vy_slider.value, wz_slider.value], dtype=np.float32),
-      (window_size, 1),
-    )
-    state["pred"] = run(all_terrains[terrain_index["value"]], command)
+    terrain_index["value"] = int(np.random.randint(0, len(all_terrains)))
+    idx = terrain_index["value"]
+    proprio = _set_target_heading(all_proprios[idx], heading_slider.value)
+    state["pred"] = run(all_terrains[idx], proprio)
 
   @next_terrain_btn.on_click
   def _(_evt) -> None:
     terrain_index["value"] = (terrain_index["value"] + 1) % len(all_terrains)
-    recorded = recorded_commands[terrain_index["value"]]
-    vx_slider.value = float(recorded[:, 0].mean())
-    vy_slider.value = float(recorded[:, 1].mean())
-    wz_slider.value = float(recorded[:, 2].mean())
-    command = np.tile(
-      np.array([vx_slider.value, vy_slider.value, wz_slider.value], dtype=np.float32),
-      (window_size, 1),
-    )
-    state["pred"] = run(all_terrains[terrain_index["value"]], command)
+    idx = terrain_index["value"]
+    recorded_angle = np.arctan2(all_proprios[idx, -1, 26], all_proprios[idx, -1, 25])
+    heading_slider.value = float(np.rad2deg(recorded_angle))
+    state["pred"] = run(all_terrains[idx], all_proprios[idx])
 
   def render(frame: int) -> None:
-    p_pos, p_quat, p_joint, ee_pos, terrain, _command = state["pred"]
+    p_pos, p_quat, p_joint, ee_pos, terrain = state["pred"]
     sim.write_pose(p_pos[frame], p_quat[frame], p_joint[frame])
     viser_scene.update_from_arrays(
 	      body_xpos=np.asarray(sim.data.xpos).reshape(1, -1, 3),
@@ -481,10 +506,13 @@ def main(cfg: Cfg) -> None:
       env_idx=0,
     )
     ee_points.points = ee_pos[frame]
-    # Display the current local height grid around the generated root.
+    # Training stores clearance = waist_z - terrain_z.  Display the sampled
+    # history terrain relative to its center point, so the terrain directly
+    # below the fourth (latest) history waist is exactly z=0:
+    # terrain_i - terrain_center = clearance_center - clearance_i.
     gx, gy = np.meshgrid(
       np.linspace(-0.8, 0.8, GRID_X, dtype=np.float32),
-      np.linspace(-0.5, 0.5, GRID_Y, dtype=np.float32),
+      np.linspace(0.5, -0.5, GRID_Y, dtype=np.float32),
       indexing="xy",
     )
     local_xy = np.stack([gx.ravel(), gy.ravel()], axis=-1)
@@ -494,7 +522,9 @@ def main(cfg: Cfg) -> None:
     world_xy = np.empty_like(local_xy)
     world_xy[:, 0] = local_xy[:, 0] * cy - local_xy[:, 1] * sy + p_pos[frame, 0]
     world_xy[:, 1] = local_xy[:, 0] * sy + local_xy[:, 1] * cy + p_pos[frame, 1]
-    terrain_points.points = np.column_stack([world_xy, terrain[frame]])
+    clearance = terrain[-1]
+    terrain_z = clearance[CENTER_IDX] - clearance
+    terrain_points.points = np.column_stack([world_xy, terrain_z])
     viser_scene.refresh_visualization()
 
   print("Viser server running. Open the printed URL in a browser.")

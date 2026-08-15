@@ -82,12 +82,13 @@ class MotionWindowDataset(Dataset[torch.Tensor]):
     return self.windows[idx]
 
 
-class ConditionalMotionDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
+class ConditionalMotionDataset(
+  Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+):
   """Loads windowed NPZs produced by ``scripts/height_map_to_npz.py``.
 
-  Each NPZ contains ``motion_windows`` (N,W,F_m), scalar terrain-z grids
-  ``terrain`` (N,W,693), and local commands ``command`` (N,W,3) ordered as
-  ``[vx, vy, wz]``.  Each stream is normalized separately.
+  Each NPZ contains ten future motion frames and four historical condition
+  frames: terrain plus ``joint_pos25 + target_heading_rot6d``.
   """
 
   def __init__(
@@ -95,7 +96,7 @@ class ConditionalMotionDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.T
     data_dir: str | Path,
     norm_stats_file: str | Path | None = None,
     terrain_norm_stats_file: str | Path | None = None,
-    command_norm_stats_file: str | Path | None = None,
+    proprio_norm_stats_file: str | Path | None = None,
   ) -> None:
     self.has_terrain = True
     npz_files = sorted(Path(data_dir).glob("*.npz"))
@@ -104,28 +105,48 @@ class ConditionalMotionDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.T
 
     motion_chunks: list[np.ndarray] = []
     terrain_chunks: list[np.ndarray] = []
-    command_chunks: list[np.ndarray] = []
+    proprio_chunks: list[np.ndarray] = []
     expected_m_shape: tuple[int, int] | None = None
     expected_t_shape: tuple[int, int] | None = None
+    expected_p_shape: tuple[int, int] | None = None
+    expected_root_body = "waist_yaw_link"
+    expected_terrain_layout = "root_z_minus_terrain_z"
 
     for npz_file in npz_files:
       with np.load(npz_file, allow_pickle=False) as npz:
         mw = npz["motion_windows"].astype(np.float32, copy=False)
         tr = npz["terrain"].astype(np.float32, copy=False)
-        cmd = npz["command"].astype(np.float32, copy=False)
+        prop = npz["proprio"].astype(np.float32, copy=False)
+        format_version = int(np.asarray(npz.get("diffusion_format_version", -1)).item())
+        root_body = str(np.asarray(npz.get("root_body", "")).item())
+        terrain_layout = str(np.asarray(npz.get("terrain_layout", "")).item())
+
+      if format_version != 3:
+        raise ValueError(
+          f"{npz_file.name}: expected diffusion_format_version=3, got {format_version}. "
+          "Re-run diffusion/scripts/height_map_to_npz.py."
+        )
+      if root_body != expected_root_body or terrain_layout != expected_terrain_layout:
+        raise ValueError(
+          f"{npz_file.name}: incompatible coordinate semantics: "
+          f"root_body={root_body!r}, terrain_layout={terrain_layout!r}"
+        )
 
       if mw.ndim != 3:
         raise ValueError(f"{npz_file.name}: 'motion_windows' has shape {mw.shape}")
       if tr.ndim != 3:
         raise ValueError(f"{npz_file.name}: 'terrain' has shape {tr.shape}")
-      if cmd.ndim != 3 or cmd.shape[-1] != 3:
-        raise ValueError(f"{npz_file.name}: 'command' has shape {cmd.shape}, expected (N,W,3)")
-      if cmd.shape[:2] != mw.shape[:2]:
-        raise ValueError(f"{npz_file.name}: command shape {cmd.shape} mismatches motion {mw.shape}")
+      if prop.ndim != 3 or prop.shape[-1] != 31:
+        raise ValueError(f"{npz_file.name}: 'proprio' has shape {prop.shape}, expected (N,W,31)")
+      if tr.shape[:2] != prop.shape[:2]:
+        raise ValueError(f"{npz_file.name}: K/V condition stream shapes do not align")
+      if mw.shape[0] != tr.shape[0]:
+        raise ValueError(f"{npz_file.name}: Q and K/V sample counts do not align")
 
       if expected_m_shape is None:
         expected_m_shape = (int(mw.shape[1]), int(mw.shape[2]))
         expected_t_shape = (int(tr.shape[1]), int(tr.shape[2]))
+        expected_p_shape = (int(prop.shape[1]), int(prop.shape[2]))
       elif (mw.shape[1], mw.shape[2]) != expected_m_shape:
         raise ValueError(f"{npz_file.name}: motion shape {mw.shape} mismatches")
       elif (tr.shape[1], tr.shape[2]) != expected_t_shape:
@@ -135,15 +156,19 @@ class ConditionalMotionDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.T
 
       motion_chunks.append(mw)
       terrain_chunks.append(tr)
-      command_chunks.append(cmd)
+      proprio_chunks.append(prop)
 
     assert expected_m_shape is not None and expected_t_shape is not None
+    assert expected_p_shape is not None
     self.window_size, self.feature_dim = expected_m_shape
     _, self.terrain_dim = expected_t_shape
+    _, self.proprio_dim = expected_p_shape
+    self.root_body = expected_root_body
+    self.terrain_layout = expected_terrain_layout
 
     motion_data = np.concatenate(motion_chunks, axis=0)
     terrain_data = np.concatenate(terrain_chunks, axis=0)
-    command_data = np.concatenate(command_chunks, axis=0)
+    proprio_data = np.concatenate(proprio_chunks, axis=0)
 
     # ── Motion normalization ──
     if norm_stats_file is not None:
@@ -179,23 +204,21 @@ class ConditionalMotionDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.T
     terrain_data = 2.0 * (terrain_data - self.t_q_low) / (self.t_q_high - self.t_q_low) - 1.0
     self.terrains = torch.from_numpy(terrain_data)
 
-    # ── Local command normalization: [vx, vy, wz] ──
-    if command_norm_stats_file is not None:
-      cstats = np.load(command_norm_stats_file, allow_pickle=False)
-      self.c_q_low = cstats["q_low"].astype(np.float32)
-      self.c_q_high = cstats["q_high"].astype(np.float32)
+    # ── Historical proprio normalization ──
+    if proprio_norm_stats_file is not None:
+      pstats = np.load(proprio_norm_stats_file, allow_pickle=False)
+      self.p_q_low = pstats["q_low"].astype(np.float32)
+      self.p_q_high = pstats["q_high"].astype(np.float32)
     else:
-      flat_c = command_data.reshape(-1, 3)
-      self.c_q_low = np.percentile(flat_c, 1, axis=0).astype(np.float32)
-      self.c_q_high = np.percentile(flat_c, 99, axis=0).astype(np.float32)
-      cspan = self.c_q_high - self.c_q_low
-      ctiny = cspan < 1e-6
-      if ctiny.any():
-        self.c_q_high[ctiny] = self.c_q_low[ctiny] + 1.0
-    command_data = 2.0 * (command_data - self.c_q_low) / (
-      self.c_q_high - self.c_q_low
+      flat_p = proprio_data.reshape(-1, self.proprio_dim)
+      self.p_q_low = np.percentile(flat_p, 1, axis=0).astype(np.float32)
+      self.p_q_high = np.percentile(flat_p, 99, axis=0).astype(np.float32)
+      ptiny = self.p_q_high - self.p_q_low < 1e-6
+      self.p_q_high[ptiny] = self.p_q_low[ptiny] + 1.0
+    proprio_data = 2.0 * (proprio_data - self.p_q_low) / (
+      self.p_q_high - self.p_q_low
     ) - 1.0
-    self.commands = torch.from_numpy(command_data)
+    self.proprios = torch.from_numpy(proprio_data)
 
   def denormalize_motion(self, x: torch.Tensor) -> torch.Tensor:
     q_low = torch.from_numpy(self.q_low).to(x.device, x.dtype)
@@ -206,4 +229,4 @@ class ConditionalMotionDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.T
     return self.windows.shape[0]
 
   def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return self.windows[idx], self.terrains[idx], self.commands[idx]
+    return self.windows[idx], self.terrains[idx], self.proprios[idx]
