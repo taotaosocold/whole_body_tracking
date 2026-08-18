@@ -1,4 +1,4 @@
-"""Diffusion model pretraining loop (unconditional or terrain-conditioned).
+"""DDPM epsilon-prediction training loop.
 
 When ``--terrain-data-dir`` is given, uses ``ConditionalMotionDataset`` and
 automatically builds a terrain-conditioned denoiser.  Otherwise falls back to
@@ -20,10 +20,10 @@ from torch.utils.data import DataLoader, random_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from source.pretrain.dataset import ConditionalMotionDataset, MotionWindowDataset
-from source.pretrain.model import DiffusionDenoiser
-from source.pretrain.pretrain_cfg import PretrainCfg
-from source.pretrain.scheduler import DDPMScheduler
+from source.common.dataset import ConditionalMotionDataset, MotionWindowDataset
+from source.common.model import DiffusionDenoiser
+from source.ddpm.ddpm_cfg import DDPMCfg
+from source.ddpm.scheduler import DDPMScheduler
 from source.utils import count_parameters, seed_everything
 
 
@@ -101,7 +101,7 @@ def _save_checkpoint(
   model: DiffusionDenoiser,
   dataset: MotionWindowDataset | ConditionalMotionDataset,
   feature_dim: int,
-  cfg: PretrainCfg,
+  cfg: DDPMCfg,
   optimizer: torch.optim.Optimizer | None = None,
   ema: _Ema | None = None,
 ) -> None:
@@ -112,6 +112,7 @@ def _save_checkpoint(
     "q_high": dataset.q_high,
     "cfg": {
       **vars(cfg),
+      "generative_method": "ddpm",
       "feature_dim": feature_dim,
       "window_size": dataset.window_size,
     },
@@ -127,6 +128,9 @@ def _save_checkpoint(
     data["cfg"]["future_size"] = dataset.window_size  # type: ignore[attr-defined]
     data["cfg"]["root_body"] = dataset.root_body  # type: ignore[attr-defined]
     data["cfg"]["terrain_layout"] = dataset.terrain_layout  # type: ignore[attr-defined]
+    data["cfg"]["motion_layout"] = dataset.motion_layout  # type: ignore[attr-defined]
+    data["cfg"]["proprio_layout"] = dataset.proprio_layout  # type: ignore[attr-defined]
+    data["cfg"]["joint_layout"] = dataset.joint_layout  # type: ignore[attr-defined]
   if optimizer is not None:
     data["optimizer"] = optimizer.state_dict()
   if ema is not None:
@@ -134,8 +138,8 @@ def _save_checkpoint(
   torch.save(data, path)
 
 
-def pretrain(cfg: PretrainCfg) -> Path:
-  """Run diffusion pretraining."""
+def train_ddpm(cfg: DDPMCfg) -> Path:
+  """Train a DDPM epsilon predictor."""
   seed_everything(cfg.seed)
   print(f"[INFO] seed={cfg.seed}")
   device = torch.device(cfg.device)
@@ -324,4 +328,4 @@ def _validate(
 
 
 if __name__ == "__main__":
-  pretrain(tyro.cli(PretrainCfg))
+  train_ddpm(tyro.cli(DDPMCfg))

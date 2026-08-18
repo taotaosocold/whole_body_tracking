@@ -88,7 +88,7 @@ class ConditionalMotionDataset(
   """Loads windowed NPZs produced by ``scripts/height_map_to_npz.py``.
 
   Each NPZ contains ten future motion frames and four historical condition
-  frames: terrain plus ``joint_pos25 + target_heading_rot6d``.
+  frames: terrain plus ``joint_pos25 + measured_local_velocity3 + command3``.
   """
 
   def __init__(
@@ -111,6 +111,9 @@ class ConditionalMotionDataset(
     expected_p_shape: tuple[int, int] | None = None
     expected_root_body = "waist_yaw_link"
     expected_terrain_layout = "root_z_minus_terrain_z"
+    expected_motion_layout = "future_h0_heading_root_xyz_offset"
+    expected_proprio_layout = "joint_pos,root_velocity_local,velocity_command_local"
+    expected_joint_layout = "isaaclab_articulation"
 
     for npz_file in npz_files:
       with np.load(npz_file, allow_pickle=False) as npz:
@@ -120,16 +123,27 @@ class ConditionalMotionDataset(
         format_version = int(np.asarray(npz.get("diffusion_format_version", -1)).item())
         root_body = str(np.asarray(npz.get("root_body", "")).item())
         terrain_layout = str(np.asarray(npz.get("terrain_layout", "")).item())
+        motion_layout = str(np.asarray(npz.get("motion_layout", "")).item())
+        proprio_layout = str(np.asarray(npz.get("proprio_layout", "")).item())
+        joint_layout = str(np.asarray(npz.get("joint_layout", "")).item())
 
-      if format_version != 3:
+      if format_version != 6:
         raise ValueError(
-          f"{npz_file.name}: expected diffusion_format_version=3, got {format_version}. "
+          f"{npz_file.name}: expected diffusion_format_version=6, got {format_version}. "
           "Re-run diffusion/scripts/height_map_to_npz.py."
         )
-      if root_body != expected_root_body or terrain_layout != expected_terrain_layout:
+      if (
+        root_body != expected_root_body
+        or terrain_layout != expected_terrain_layout
+        or motion_layout != expected_motion_layout
+        or proprio_layout != expected_proprio_layout
+        or joint_layout != expected_joint_layout
+      ):
         raise ValueError(
           f"{npz_file.name}: incompatible coordinate semantics: "
-          f"root_body={root_body!r}, terrain_layout={terrain_layout!r}"
+          f"root_body={root_body!r}, terrain_layout={terrain_layout!r}, "
+          f"motion_layout={motion_layout!r}, proprio_layout={proprio_layout!r}, "
+          f"joint_layout={joint_layout!r}"
         )
 
       if mw.ndim != 3:
@@ -165,6 +179,9 @@ class ConditionalMotionDataset(
     _, self.proprio_dim = expected_p_shape
     self.root_body = expected_root_body
     self.terrain_layout = expected_terrain_layout
+    self.motion_layout = expected_motion_layout
+    self.proprio_layout = expected_proprio_layout
+    self.joint_layout = expected_joint_layout
 
     motion_data = np.concatenate(motion_chunks, axis=0)
     terrain_data = np.concatenate(terrain_chunks, axis=0)

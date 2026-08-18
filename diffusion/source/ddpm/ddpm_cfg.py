@@ -1,4 +1,4 @@
-"""Diffusion pretraining configuration."""
+"""DDPM training configuration."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from source.utils import detect_device
 
 
 @dataclass
-class PretrainCfg:
-  """Configuration for diffusion model pretraining."""
+class DDPMCfg:
+  """Configuration for DDPM epsilon-prediction training."""
 
   # Data
-  data_dir: str = "datasets/npz"
+  data_dir: str = "diffusion/source/datasets"
   norm_stats_file: str = ""
   """Path to q01/q99 quantile stats from compute_norm_stats.py."""
   terrain_norm_stats_file: str = ""
@@ -51,11 +51,11 @@ class PretrainCfg:
   max_grad_norm: float = 1.0
 
   # Logging
-  name: str = "pretrain"
+  name: str = "casbot_ddpm"
   """Run identifier; used as the wandb run name and the save subfolder."""
   log_interval: int = 10
   save_interval: int = 100
-  log_dir: str = "logs/pretrain"
+  log_dir: str = "logs/ddpm"
   wandb_project: str = "smp"
   use_wandb: bool = True
 

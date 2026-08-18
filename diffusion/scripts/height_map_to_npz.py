@@ -5,10 +5,12 @@ script windows both the motion and terrain data, producing output NPZs with:
 
   motion_windows  (N, future_size, 80)  — future CASBOT motion targets
   terrain         (N, history_size, 693) — historical terrain
-  proprio         (N, history_size, 31) — joint q25 + target-heading rot6d
+  proprio         (N, history_size, 31) — joint q25 + local velocity3 + command3
 
-Motion features are anchored to the LAST window frame's yaw-only local frame
-(identical to csv_to_npz.py).  Terrain stays in each frame's own local frame.
+Future spatial features are expressed in the yaw-only heading frame of H0,
+the first of the four known history frames.  Future root xyz is an offset from
+H0; end-effector positions remain offsets from each future frame's own root.
+Terrain stays in each history frame's own local sampling grid.
 
 Usage:
 python diffusion/scripts/height_map_to_npz.py \
@@ -42,28 +44,21 @@ from source.utils import detect_device
 ROOT_BODY_IDX = 3  # waist_yaw_link
 ROOT_BODY_NAME = "waist_yaw_link"
 TERRAIN_LAYOUT = "root_z_minus_terrain_z"
+MOTION_LAYOUT = "future_h0_heading_root_xyz_offset"
+PROPRIO_LAYOUT = "joint_pos,root_velocity_local,velocity_command_local"
+JOINT_LAYOUT = "isaaclab_articulation"
 EE_IDXS = (22, 23, 11, 24, 25)  # left/right ankle, head, left/right wrist
 NUM_JOINTS = 25
 NUM_EE = len(EE_IDXS)
 
 # ── Feature dimension breakdown ──
 FEATURE_DIMS = (3, 6, NUM_JOINTS, NUM_JOINTS, NUM_EE * 3, 3, 3)  # 80 total
-PROPRIO_DIMS = (NUM_JOINTS, 6)
+PROPRIO_DIMS = (NUM_JOINTS, 3, 3)
 
 # ── Terrain grid ──
 GRID_X = 33
 GRID_Y = 21
 HEIGHT_MAP_DIM = GRID_X * GRID_Y  # 693
-
-# Isaac articulation order -> CASBOT limb-grouped order used by visualization.
-CASBOT_JOINT_ORDER = (
-    0, 3, 8, 13, 17, 21,
-    1, 4, 9, 14, 18, 22,
-    2, 5, 10,
-    6, 11, 15, 19, 23,
-    7, 12, 16, 20, 24,
-)
-
 
 @dataclass
 class Cfg:
@@ -109,15 +104,16 @@ def _compute_windows(
     history_size: int,
     future_size: int,
     stride: int,
+    fps: int,
 ) -> tuple[
     torch.Tensor | None,
     torch.Tensor | None,
     torch.Tensor | None,
 ]:
-    """Return future motion and historical terrain/joint-heading conditions.
+    """Return future motion and historical terrain/velocity conditions.
 
-    Motion features anchored to the LAST frame's yaw-only local frame.
-    root_pos z is terrain-relative (height above terrain at pelvis xy).
+    Future spatial features use H0's yaw-only heading frame.
+    root_pos xyz is relative to H0's world root position.
     Terrain is stored as root height minus terrain height for every ray.
     """
     T = base_pos.shape[0]
@@ -145,50 +141,64 @@ def _compute_windows(
     win_joint = joint_pos.index_select(0, flat_idx).reshape(N, W, J)
     win_joint_vel = joint_vel.index_select(0, flat_idx).reshape(N, W, J)
 
-    # Future targets are anchored to the latest available history frame.
-    current_idx = history_idx[:, -1]
-    anchor_pos_T = base_pos.index_select(0, current_idx)
-    anchor_quat_T = base_quat.index_select(0, current_idx)
-    yaw_T = yaw_quat(anchor_quat_T)                # (N, 4)
-    heading_inv_T_WF = quat_conjugate(yaw_T)[:, None, :].expand(N, W, 4).reshape(-1, 4)
-    yaw_T_W = yaw_T[:, None, :].expand(N, W, 4).reshape(-1, 4)
+    # H0 is known at inference and uniquely anchors the generated world trajectory.
+    h0_idx = history_idx[:, 0]
+    anchor_pos_h0 = base_pos.index_select(0, h0_idx)
+    anchor_quat_h0 = base_quat.index_select(0, h0_idx)
+    yaw_h0 = yaw_quat(anchor_quat_h0)                # (N, 4)
+    heading_inv_h0_wf = quat_conjugate(yaw_h0)[:, None, :].expand(N, W, 4).reshape(-1, 4)
+    yaw_h0_w = yaw_h0[:, None, :].expand(N, W, 4).reshape(-1, 4)
 
-    # root_pos: xy in heading-invariant frame, z terrain-relative (height above terrain)
-    root_offset = win_base_pos - anchor_pos_T[:, None, :]  # (N, W, 3)
-    root_pos_local = quat_apply_inverse(yaw_T_W, root_offset.reshape(-1, 3)).reshape(N, W, 3)
-    root_pos_local = root_pos_local.clone()
-    # Terrain height directly below the waist: center of the 33×21 grid.
-    future_terrain = height_map.index_select(0, flat_idx).reshape(N, W, HEIGHT_MAP_DIM)
-    terrain_z = future_terrain[:, :, GRID_X // 2 * GRID_Y + GRID_Y // 2]
-    root_pos_local[..., 2] = win_base_pos[..., 2] - terrain_z
+    # root_pos: full xyz offset from H0, expressed in H0's heading frame.
+    root_offset = win_base_pos - anchor_pos_h0[:, None, :]  # (N, W, 3)
+    root_pos_local = quat_apply_inverse(yaw_h0_w, root_offset.reshape(-1, 3)).reshape(N, W, 3)
 
-    # root_rot: heading_inv(T) ⊗ root_quat[t] → 6D tan-norm
+    # root_rot: heading_inv(H0) ⊗ root_quat[t] → 6D tan-norm
     root_rot_local_quat = quat_mul(
-        heading_inv_T_WF, win_base_quat.reshape(-1, 4)
+        heading_inv_h0_wf, win_base_quat.reshape(-1, 4)
     ).reshape(N, W, 4)
     root_rot_6d = _tan_norm_from_quat(root_rot_local_quat)
 
-    # EE: (ee[t] - root[t]) rotated into last-frame heading-invariant frame
+    # EE: per-frame root offset, expressed in H0's heading frame.
     ee_offset_w = win_ee_pos - win_base_pos[:, :, None, :]  # (N, W, E, 3)
-    yaw_T_E = yaw_T[:, None, None, :].expand(N, W, E, 4).reshape(-1, 4)
-    ee_pos_local = quat_apply_inverse(yaw_T_E, ee_offset_w.reshape(-1, 3)).reshape(N, W, E * 3)
+    yaw_h0_e = yaw_h0[:, None, None, :].expand(N, W, E, 4).reshape(-1, 4)
+    ee_pos_local = quat_apply_inverse(yaw_h0_e, ee_offset_w.reshape(-1, 3)).reshape(N, W, E * 3)
 
-    # Velocities: rotated into last-frame heading-invariant frame
-    lin_vel_local = quat_apply_inverse(yaw_T_W, win_base_lin_vel.reshape(-1, 3)).reshape(N, W, 3)
-    ang_vel_local = quat_apply_inverse(yaw_T_W, win_base_ang_vel.reshape(-1, 3)).reshape(N, W, 3)
+    # Root velocities: world vectors expressed in H0's heading frame.
+    lin_vel_local = quat_apply_inverse(yaw_h0_w, win_base_lin_vel.reshape(-1, 3)).reshape(N, W, 3)
+    ang_vel_local = quat_apply_inverse(yaw_h0_w, win_base_ang_vel.reshape(-1, 3)).reshape(N, W, 3)
 
-    # Historical joint configuration plus desired yaw.  The desired yaw is
-    # the final future frame's yaw, expressed relative to every history frame.
+    # Historical measured velocity: each frame's world velocity expressed in
+    # that same frame's yaw-only root coordinates.  These are velocities, not
+    # offsets from H0 and not finite differences against another velocity.
     hist_flat = history_idx.reshape(-1)
     hist_quat = base_quat.index_select(0, hist_flat)
     hist_joint = joint_pos.index_select(0, hist_flat).reshape(N, H, J)
     hist_yaw = yaw_quat(hist_quat).reshape(N, H, 4)
-    target_yaw = yaw_quat(win_base_quat[:, -1])[:, None, :].expand(N, H, 4)
-    relative_target_yaw = quat_mul(
-        quat_conjugate(hist_yaw.reshape(-1, 4)), target_yaw.reshape(-1, 4)
-    ).reshape(N, H, 4)
-    target_heading_6d = _tan_norm_from_quat(relative_target_yaw)
-    proprio = torch.cat([hist_joint, target_heading_6d], dim=-1)
+    hist_lin_vel_w = base_lin_vel.index_select(0, hist_flat)
+    hist_ang_vel_w = base_ang_vel.index_select(0, hist_flat)
+    hist_lin_vel_b = quat_apply_inverse(hist_yaw.reshape(-1, 4), hist_lin_vel_w).reshape(N, H, 3)
+    hist_ang_vel_b = quat_apply_inverse(hist_yaw.reshape(-1, 4), hist_ang_vel_w).reshape(N, H, 3)
+    hist_root_velocity = torch.cat(
+        [hist_lin_vel_b[..., :2], hist_ang_vel_b[..., 2:3]], dim=-1
+    )
+
+    # Desired joystick-style command.  For supervised data it is estimated
+    # from H3 -> F9, expressed in H3's yaw frame, and repeated for H0...H3.
+    # H3 to F9 contains exactly `future_size` sampling intervals.
+    h3_idx = history_idx[:, -1]
+    h3_pos = base_pos.index_select(0, h3_idx)
+    h3_yaw = yaw_quat(base_quat.index_select(0, h3_idx))
+    command_duration = float(future_size) / float(fps)
+    command_disp_b = quat_apply_inverse(h3_yaw, win_base_pos[:, -1] - h3_pos)
+    relative_target_yaw = quat_mul(quat_conjugate(h3_yaw), yaw_quat(win_base_quat[:, -1]))
+    w, x, y, z = relative_target_yaw.unbind(-1)
+    command_yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    velocity_command = torch.cat(
+        [command_disp_b[:, :2] / command_duration, command_yaw[:, None] / command_duration], dim=-1
+    )
+    velocity_command = velocity_command[:, None, :].expand(N, H, 3)
+    proprio = torch.cat([hist_joint, hist_root_velocity, velocity_command], dim=-1)
 
     motion = torch.cat(
         [
@@ -269,11 +279,13 @@ def main(cfg: Cfg) -> None:
         ee_pos_list = [data["body_pos_w"][:T, idx, :].astype(np.float32) for idx in EE_IDXS]
         ee_pos = torch.from_numpy(np.stack(ee_pos_list, axis=1)).to(device)  # (T, E, 3)
 
+        # collect_motion.py stores robot.data.joint_{pos,vel} directly.  Keep
+        # that IsaacLab articulation order throughout preprocessing/training.
         joint_pos = torch.from_numpy(
-            data["joint_pos"][:T].astype(np.float32)[:, CASBOT_JOINT_ORDER]
+            data["joint_pos"][:T].astype(np.float32)
         ).to(device)
         joint_vel = torch.from_numpy(
-            data["joint_vel"][:T].astype(np.float32)[:, CASBOT_JOINT_ORDER]
+            data["joint_vel"][:T].astype(np.float32)
         ).to(device)
 
         elevation_xyz = data["elevation_map_xyz"][:T].astype(np.float32)
@@ -287,7 +299,7 @@ def main(cfg: Cfg) -> None:
         motion, terrain, proprio = _compute_windows(
             base_pos, base_quat, base_lin_vel, base_ang_vel,
             ee_pos, joint_pos, joint_vel, height_map,
-            cfg.history_size, cfg.future_size, cfg.stride,
+            cfg.history_size, cfg.future_size, cfg.stride, cfg.fps,
         )
 
         if (
@@ -313,9 +325,12 @@ def main(cfg: Cfg) -> None:
             stride=np.array([cfg.stride], dtype=np.int32),
             feature_dims=np.array(FEATURE_DIMS, dtype=np.int32),
             proprio_dims=np.array(PROPRIO_DIMS, dtype=np.int32),
-            diffusion_format_version=np.array(3, dtype=np.int32),
+            diffusion_format_version=np.array(6, dtype=np.int32),
             root_body=np.array(ROOT_BODY_NAME),
             terrain_layout=np.array(TERRAIN_LAYOUT),
+            motion_layout=np.array(MOTION_LAYOUT),
+            proprio_layout=np.array(PROPRIO_LAYOUT),
+            joint_layout=np.array(JOINT_LAYOUT),
             # Actual flattened array layout for IsaacLab ordering="xy": Y x X.
             terrain_shape=np.array([GRID_Y, GRID_X], dtype=np.int32),
         )

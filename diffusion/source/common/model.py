@@ -1,4 +1,4 @@
-"""DiT-style ε-prediction denoiser for motion windows (optionally terrain-conditioned).
+"""DiT-style predictor for DDPM noise or Flow Matching velocity fields.
 
 Terrain conditioning uses cross-attention: Q comes from the noisy motion sequence,
 K and V come from terrain features.  When ``terrain_dim`` is None the model falls
@@ -248,7 +248,7 @@ class DiffusionDenoiser(nn.Module):
   from the noisy motion stream.  When ``terrain_dim`` is None the model
   behaves as an unconditional self-attention DiT.
 
-  Input:  ``x_t (B, W, feature_dim)``, ``t (B,)`` long timesteps,
+  Input:  ``x_t (B, W, feature_dim)``, ``t (B,)`` scalar times,
           ``terrain (B, W, terrain_dim)`` optional
   Output: predicted noise ``(B, W, feature_dim)``
   """

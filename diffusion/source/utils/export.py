@@ -1,12 +1,11 @@
-"""Export a diffusion denoiser checkpoint to ONNX.
+"""Export a DDPM noise predictor or Flow Matching velocity field to ONNX.
 
-The exported model represents one epsilon-prediction (denoising) call.  The
-DDPM/DDIM scheduler remains responsible for invoking the model at each
-sampling timestep.
+The exported model represents one noise- or velocity-prediction call. The
+runtime sampler remains responsible for invoking it at each sampling time.
 
 Example:
   python diffusion/source/utils/export.py \
-    logs/pretrain/casbot_diffusion/20260813_233015/pretrained.pt
+    logs/ddpm/casbot_ddpm/.../pretrained.pt
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ DIFFUSION_ROOT = Path(__file__).resolve().parents[2]
 if str(DIFFUSION_ROOT) not in sys.path:
   sys.path.insert(0, str(DIFFUSION_ROOT))
 
-from source.pretrain.model import DiffusionDenoiser  # noqa: E402
+from source.common.model import DiffusionDenoiser  # noqa: E402
 
 
 class _ConditionalDenoiser(nn.Module):
@@ -88,9 +87,10 @@ def _export_onnx(
   terrain_dim = int(cfg["terrain_dim"])
   proprio_dim = int(cfg.get("proprio_dim", 31))
   history = int(cfg.get("history_size", 4))
+  method = str(cfg.get("generative_method", "ddpm"))
   inputs = (
     torch.randn(batch, window, feature_dim, dtype=torch.float32),
-    torch.zeros(batch, dtype=torch.int64),
+    torch.zeros(batch, dtype=torch.int64 if method == "ddpm" else torch.float32),
     torch.randn(batch, history, terrain_dim, dtype=torch.float32),
     torch.randn(batch, history, proprio_dim, dtype=torch.float32),
   )
@@ -100,7 +100,7 @@ def _export_onnx(
       inputs,
       str(output_path),
       input_names=["x_t", "timestep", "terrain", "proprio"],
-      output_names=["noise"],
+      output_names=["noise" if method == "ddpm" else "velocity"],
       opset_version=opset,
       do_constant_folding=True,
       external_data=False,
@@ -108,16 +108,30 @@ def _export_onnx(
   return inputs
 
 
-def _validate_coordinate_semantics(cfg: dict[str, Any]) -> tuple[str, str]:
+def _validate_coordinate_semantics(cfg: dict[str, Any]) -> tuple[str, str, str, str, str]:
   root_body = cfg.get("root_body")
   terrain_layout = cfg.get("terrain_layout")
-  if root_body != "waist_yaw_link" or terrain_layout != "root_z_minus_terrain_z":
+  motion_layout = cfg.get("motion_layout")
+  proprio_layout = cfg.get("proprio_layout")
+  joint_layout = cfg.get("joint_layout")
+  if (
+    root_body != "waist_yaw_link"
+    or terrain_layout != "root_z_minus_terrain_z"
+    or motion_layout != "future_h0_heading_root_xyz_offset"
+    or proprio_layout != "joint_pos,root_velocity_local,velocity_command_local"
+    or joint_layout != "isaaclab_articulation"
+  ):
     raise ValueError(
-      "Checkpoint lacks the required format-v3 coordinate semantics: "
-      f"root_body={root_body!r}, terrain_layout={terrain_layout!r}. "
+      "Checkpoint lacks the required format-v6 velocity-command semantics: "
+      f"root_body={root_body!r}, terrain_layout={terrain_layout!r}, "
+      f"motion_layout={motion_layout!r}, proprio_layout={proprio_layout!r}, "
+      f"joint_layout={joint_layout!r}. "
       "Rebuild the dataset and retrain; do not re-export an old checkpoint."
     )
-  return str(root_body), str(terrain_layout)
+  return (
+    str(root_body), str(terrain_layout), str(motion_layout),
+    str(proprio_layout), str(joint_layout),
+  )
 
 
 def _embed_metadata(
@@ -126,21 +140,36 @@ def _embed_metadata(
   cfg: dict[str, Any],
 ) -> None:
   """Embed sampling configuration and normalization arrays in the ONNX file."""
-  root_body, terrain_layout = _validate_coordinate_semantics(cfg)
+  root_body, terrain_layout, motion_layout, proprio_layout, joint_layout = (
+    _validate_coordinate_semantics(cfg)
+  )
   model = onnx.load(str(onnx_path), load_external_data=True)
+  method = str(cfg.get("generative_method", "ddpm"))
   metadata = {
-    "diffusion.format_version": "3",
-    "diffusion.num_timesteps": str(int(cfg.get("num_timesteps", 50))),
+    "diffusion.format_version": "6",
+    "diffusion.generative_method": method,
     "diffusion.window_size": str(int(cfg["window_size"])),
     "diffusion.feature_dim": str(int(cfg["feature_dim"])),
     "diffusion.terrain_dim": str(int(cfg["terrain_dim"])),
     "diffusion.proprio_dim": str(int(cfg.get("proprio_dim", 31))),
     "diffusion.history_size": str(int(cfg.get("history_size", 4))),
     "diffusion.future_size": str(int(cfg.get("future_size", cfg["window_size"]))),
-    "diffusion.proprio_layout": "joint_pos,target_heading_rot6d",
+    "diffusion.proprio_layout": proprio_layout,
     "diffusion.root_body": str(root_body),
     "diffusion.terrain_layout": str(terrain_layout),
+    "diffusion.motion_layout": motion_layout,
+    "diffusion.joint_layout": joint_layout,
   }
+  if method == "ddpm":
+    metadata["diffusion.num_timesteps"] = str(int(cfg.get("num_timesteps", 50)))
+  elif method == "flow_matching":
+    metadata["diffusion.sampling_steps"] = str(int(cfg.get("sampling_steps", 10)))
+    metadata["diffusion.sampler"] = str(cfg.get("sampler", "euler"))
+    metadata["diffusion.time_embedding_scale"] = str(
+      float(cfg.get("time_embedding_scale", 1000.0))
+    )
+  else:
+    raise ValueError(f"Unknown generative_method={method!r}")
   for key in (
     "q_low", "q_high", "t_q_low", "t_q_high", "p_q_low", "p_q_high",
   ):
@@ -203,7 +232,7 @@ def main() -> None:
   onnx.checker.check_model(onnx.load(str(onnx_path)))
   print(f"[OK] ONNX model: {onnx_path}")
   print("[OK] Sampling config and normalization stats embedded in ONNX metadata")
-  print("[NOTE] This model is one denoising step; the sampler calls it repeatedly.")
+  print("[NOTE] This model is one noise/velocity prediction; the sampler calls it repeatedly.")
 
 
 if __name__ == "__main__":
