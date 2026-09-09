@@ -31,8 +31,8 @@ class DDPMCfg:
   # giving a physical tensor layout of (21 Y rows, 33 X columns).
   terrain_height: int = 21
   terrain_width: int = 33
-  terrain_feature_dim: int = 23
-  proprio_dim: int = 31
+  terrain_feature_dim: int = 48
+  proprio_dim: int = 28
 
   # Diffusion
   num_timesteps: int = 50

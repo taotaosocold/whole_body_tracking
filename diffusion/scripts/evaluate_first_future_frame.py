@@ -54,8 +54,8 @@ def main() -> None:
         terrain_dim=int(cfg["terrain_dim"]),
         terrain_height=int(cfg.get("terrain_height", 21)),
         terrain_width=int(cfg.get("terrain_width", 33)),
-        terrain_feature_dim=int(cfg.get("terrain_feature_dim", 23)),
-        proprio_dim=int(cfg.get("proprio_dim", 31)),
+        terrain_feature_dim=int(cfg.get("terrain_feature_dim", 48)),
+        proprio_dim=int(cfg.get("proprio_dim", 28)),
     ).to(device)
     model.load_state_dict(checkpoint.get("model_ema", checkpoint["model"]), strict=True)
     model.eval().requires_grad_(False)

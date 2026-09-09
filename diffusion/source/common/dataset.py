@@ -87,8 +87,9 @@ class ConditionalMotionDataset(
 ):
   """Loads windowed NPZs produced by ``scripts/height_map_to_npz.py``.
 
-  Each NPZ contains ten future motion frames and four historical condition
-  frames: terrain plus ``joint_pos25 + measured_local_velocity3 + command3``.
+  Each NPZ contains ten future motion frames and historical condition frames:
+  terrain plus ``joint_pos25 + command3``. The history length is read from
+  the NPZ metadata and is currently two frames for the 10 Hz dataset.
   """
 
   def __init__(
@@ -112,8 +113,10 @@ class ConditionalMotionDataset(
     expected_root_body = "waist_yaw_link"
     expected_terrain_layout = "root_z_minus_terrain_z"
     expected_motion_layout = "future_h0_heading_root_xyz_offset"
-    expected_proprio_layout = "joint_pos,root_velocity_local,velocity_command_local"
+    expected_proprio_layout = "joint_pos,velocity_command_local"
     expected_joint_layout = "isaaclab_articulation"
+    expected_terrain_grid_layout = "x_ascending_y_ascending"
+    expected_future_frame_stride: int | None = None
 
     for npz_file in npz_files:
       with np.load(npz_file, allow_pickle=False) as npz:
@@ -126,10 +129,14 @@ class ConditionalMotionDataset(
         motion_layout = str(np.asarray(npz.get("motion_layout", "")).item())
         proprio_layout = str(np.asarray(npz.get("proprio_layout", "")).item())
         joint_layout = str(np.asarray(npz.get("joint_layout", "")).item())
+        terrain_grid_layout = str(np.asarray(npz.get("terrain_grid_layout", "")).item())
+        future_frame_stride = int(
+          np.asarray(npz.get("future_frame_stride", -1)).reshape(-1)[0]
+        )
 
-      if format_version != 6:
+      if format_version != 7:
         raise ValueError(
-          f"{npz_file.name}: expected diffusion_format_version=6, got {format_version}. "
+          f"{npz_file.name}: expected diffusion_format_version=7, got {format_version}. "
           "Re-run diffusion/scripts/height_map_to_npz.py."
         )
       if (
@@ -138,20 +145,33 @@ class ConditionalMotionDataset(
         or motion_layout != expected_motion_layout
         or proprio_layout != expected_proprio_layout
         or joint_layout != expected_joint_layout
+        or terrain_grid_layout != expected_terrain_grid_layout
       ):
         raise ValueError(
           f"{npz_file.name}: incompatible coordinate semantics: "
           f"root_body={root_body!r}, terrain_layout={terrain_layout!r}, "
           f"motion_layout={motion_layout!r}, proprio_layout={proprio_layout!r}, "
-          f"joint_layout={joint_layout!r}"
+          f"joint_layout={joint_layout!r}, terrain_grid_layout={terrain_grid_layout!r}"
+        )
+      if future_frame_stride <= 0:
+        raise ValueError(
+          f"{npz_file.name}: missing/invalid future_frame_stride. "
+          "Re-run diffusion/scripts/height_map_to_npz.py."
+        )
+      if expected_future_frame_stride is None:
+        expected_future_frame_stride = future_frame_stride
+      elif future_frame_stride != expected_future_frame_stride:
+        raise ValueError(
+          f"{npz_file.name}: future_frame_stride={future_frame_stride} does not "
+          f"match {expected_future_frame_stride}"
         )
 
       if mw.ndim != 3:
         raise ValueError(f"{npz_file.name}: 'motion_windows' has shape {mw.shape}")
       if tr.ndim != 3:
         raise ValueError(f"{npz_file.name}: 'terrain' has shape {tr.shape}")
-      if prop.ndim != 3 or prop.shape[-1] != 31:
-        raise ValueError(f"{npz_file.name}: 'proprio' has shape {prop.shape}, expected (N,W,31)")
+      if prop.ndim != 3 or prop.shape[-1] != 28:
+        raise ValueError(f"{npz_file.name}: 'proprio' has shape {prop.shape}, expected (N,W,28)")
       if tr.shape[:2] != prop.shape[:2]:
         raise ValueError(f"{npz_file.name}: K/V condition stream shapes do not align")
       if mw.shape[0] != tr.shape[0]:
@@ -182,6 +202,9 @@ class ConditionalMotionDataset(
     self.motion_layout = expected_motion_layout
     self.proprio_layout = expected_proprio_layout
     self.joint_layout = expected_joint_layout
+    self.terrain_grid_layout = expected_terrain_grid_layout
+    assert expected_future_frame_stride is not None
+    self.future_frame_stride = expected_future_frame_stride
 
     motion_data = np.concatenate(motion_chunks, axis=0)
     terrain_data = np.concatenate(terrain_chunks, axis=0)

@@ -50,6 +50,7 @@ class ParkourMotionLoader:
         body_quat_w = []
         body_lin_vel_w = []
         body_ang_vel_w = []
+        elevation_map_xyz = []
         motion_frames = []
         motion_fps = []
 
@@ -65,6 +66,10 @@ class ParkourMotionLoader:
             body_ang_vel_w.append(
                 torch.as_tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
             )
+            if "elevation_map_xyz" in data:
+                elevation_map_xyz.append(
+                    torch.as_tensor(data["elevation_map_xyz"], dtype=torch.float32, device=device)
+                )
             motion_frames.append(data["joint_pos"].shape[0])
             motion_fps.append(float(np.asarray(data["fps"]).reshape(-1)[0]))
 
@@ -74,6 +79,11 @@ class ParkourMotionLoader:
         self.body_quat_w = torch.cat(body_quat_w, dim=0)
         self.body_lin_vel_w = torch.cat(body_lin_vel_w, dim=0)
         self.body_ang_vel_w = torch.cat(body_ang_vel_w, dim=0)
+        self.elevation_map_xyz = (
+            torch.cat(elevation_map_xyz, dim=0)
+            if len(elevation_map_xyz) == len(motion_files)
+            else None
+        )
         self.motion_frames = torch.tensor(motion_frames, dtype=torch.long, device=device)
         self.motion_fps = torch.tensor(motion_fps, dtype=torch.float32, device=device)
         self.motion_start = torch.cat(

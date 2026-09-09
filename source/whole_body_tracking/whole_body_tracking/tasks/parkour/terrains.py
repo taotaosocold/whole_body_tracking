@@ -22,6 +22,19 @@ def static_obstacle_terrain(
     if not isinstance(obstacle_mesh, trimesh.Trimesh):
         raise ValueError(f"Unable to load obstacle mesh as Trimesh: {cfg.obstacle_file}")
 
+    if cfg.place_in_front_distance is not None:
+        # Put the closest point of the mesh at +X=distance from the robot and
+        # center it laterally.  TerrainGenerator subsequently centers the tile,
+        # leaving these robot-relative coordinates unchanged.
+        bounds = obstacle_mesh.bounds
+        obstacle_mesh.apply_translation(
+            (
+                float(cfg.place_in_front_distance) - float(bounds[0, 0]),
+                -0.5 * float(bounds[0, 1] + bounds[1, 1]),
+                0.0,
+            )
+        )
+
     # TerrainGenerator expects generated vertices in [0, size] and centers them afterwards.
     # The matching translation therefore cancels out and preserves the STL's authored coordinates.
     obstacle_mesh.apply_translation((cfg.size[0] / 2.0, cfg.size[1] / 2.0, 0.0))
@@ -38,4 +51,6 @@ class StaticObstacleTerrainCfg(SubTerrainBaseCfg):
 
     obstacle_file: str = MISSING
     ground_height: float = 0.0
-
+    # If set, place the mesh in front of the terrain origin.  The value is the
+    # gap from the robot origin to the mesh's closest X point, in metres.
+    place_in_front_distance: float | None = None

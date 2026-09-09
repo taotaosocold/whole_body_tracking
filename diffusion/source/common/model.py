@@ -191,15 +191,15 @@ class _DiTBlock(nn.Module):
     return x
 
 
-class _TerrainEncoder23(nn.Module):
-  """Encode one 33 x 21 scalar height map into a compact 23-D feature.
+class _TerrainEncoder48(nn.Module):
+  """Encode one 33 x 21 scalar height map into a compact 48-D feature.
 
   The three strided convolutions have an effective 21 x 21 receptive field
   before global pooling.  Adaptive pooling then lets every output feature
   aggregate the complete terrain scan.
   """
 
-  def __init__(self, height: int = 21, width: int = 33, output_dim: int = 23) -> None:
+  def __init__(self, height: int = 21, width: int = 33, output_dim: int = 48) -> None:
     super().__init__()
     self.height = height
     self.width = width
@@ -265,8 +265,8 @@ class DiffusionDenoiser(nn.Module):
     terrain_dim: int | None = None,
     terrain_height: int = 21,
     terrain_width: int = 33,
-    terrain_feature_dim: int = 23,
-    proprio_dim: int = 31,
+    terrain_feature_dim: int = 48,
+    proprio_dim: int = 28,
   ) -> None:
     super().__init__()
     self.feature_dim = feature_dim
@@ -295,7 +295,8 @@ class DiffusionDenoiser(nn.Module):
       )
       raise ValueError(msg)
 
-    # Each K/V token: terrain feature + joint position + target heading rot6d.
+    # Each K/V token: terrain feature + historical proprioception
+    # (joint positions and the desired velocity command).
     if terrain_dim is not None:
       expected_terrain_dim = terrain_height * terrain_width
       if terrain_dim != expected_terrain_dim:
@@ -303,7 +304,7 @@ class DiffusionDenoiser(nn.Module):
           f"terrain_dim must be {expected_terrain_dim} "
           f"({terrain_height}x{terrain_width} z values), got {terrain_dim}"
         )
-      self.terrain_encoder = _TerrainEncoder23(
+      self.terrain_encoder = _TerrainEncoder48(
         height=terrain_height,
         width=terrain_width,
         output_dim=terrain_feature_dim,

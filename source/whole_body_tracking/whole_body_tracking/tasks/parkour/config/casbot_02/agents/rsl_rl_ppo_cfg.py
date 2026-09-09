@@ -81,3 +81,10 @@ class CASBOTParkourCnnPPORunnerCfg(CASBOTParkourPPORunnerCfg):
     def __post_init__(self):
         super().__post_init__()
         self.algorithm.share_cnn_encoders = False
+
+
+@configclass
+class CASBOTDiffusionParkourPPORunnerCfg(CASBOTParkourCnnPPORunnerCfg):
+    """CNN policy for H0-anchored online diffusion references."""
+
+    experiment_name = "CASBOT_parkour_diffusion"

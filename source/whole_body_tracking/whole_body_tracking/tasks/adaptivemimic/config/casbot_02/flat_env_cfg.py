@@ -20,7 +20,7 @@ class CASBOTFlatEnvCfg(TrackingEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        self.scene.robot = CASBOT_02_25DOF_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot = CASBOT_02_25DOF_CYLINDER_WITH_HANDS_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.actions.joint_pos.scale = CASBOT_02_25DOF_ACTION_SCALE
         self.commands.motion.anchor_body_name = "waist_yaw_link"
         self.commands.motion.body_names = [

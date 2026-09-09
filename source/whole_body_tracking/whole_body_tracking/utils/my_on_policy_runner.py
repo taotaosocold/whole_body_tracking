@@ -4,7 +4,6 @@ import time
 import torch
 
 from rsl_rl.env import VecEnv
-from rsl_rl.runners.distillation_runner import DistillationRunner
 from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 from rsl_rl.utils import check_nan
 
@@ -33,10 +32,6 @@ def _get_policy_and_normalizer(runner):
     if hasattr(runner.alg, "actor"):
         actor = runner.alg.actor
         return _PolicyCompat(actor), actor.obs_normalizer
-    # Distillation algorithm: student model is the policy
-    if hasattr(runner.alg, "student"):
-        student = runner.alg.student
-        return _PolicyCompat(student), student.obs_normalizer
     raise RuntimeError(f"Unknown algorithm type: {type(runner.alg)}")
 
 
@@ -205,48 +200,4 @@ class MotionOnPolicyRunner(OnPolicyRunner):
             attach_onnx_metadata(self.env.unwrapped, "local", path=policy_path, filename=filename)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
-        _learn_with_best_tracking(self, num_learning_iterations, init_at_random_ep_len)
-
-
-class MotionDistillationRunner(DistillationRunner):
-    def __init__(
-        self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu", registry_name: str = None
-    ):
-        super().__init__(env, train_cfg, log_dir, device)
-        self.registry_name = registry_name
-
-    def _is_motion_task(self) -> bool:
-        """Check if the environment has a motion command (vs. locomotion velocity commands)."""
-        return "motion" in self.env.unwrapped.command_manager.active_terms
-
-    def save(self, path: str, infos=None):
-        """Save the model and training information."""
-        super().save(path, infos)
-        if not self._is_motion_task():
-            return
-        policy_path = path.split("model")[0]
-        filename = policy_path.split("/")[-2] + ".onnx"
-        policy, normalizer = _get_policy_and_normalizer(self)
-        export_motion_policy_as_onnx(
-            self.env.unwrapped, policy, normalizer=normalizer, path=policy_path, filename=filename
-        )
-        if _is_wandb_logger(self):
-            import wandb
-
-            attach_onnx_metadata(self.env.unwrapped, wandb.run.name, path=policy_path, filename=filename)
-            wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
-
-            if self.registry_name is not None:
-                wandb.run.use_artifact(self.registry_name)
-                self.registry_name = None
-        else:
-            attach_onnx_metadata(self.env.unwrapped, "local", path=policy_path, filename=filename)
-
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
-        # DistillationRunner's validation
-        if self.alg.teacher is None:
-            raise RuntimeError(
-                "No teacher model loaded for distillation. "
-                "Use --load_run or specify a checkpoint to load the teacher."
-            )
         _learn_with_best_tracking(self, num_learning_iterations, init_at_random_ep_len)

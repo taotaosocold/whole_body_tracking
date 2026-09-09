@@ -23,8 +23,8 @@ class FlowMatchingCfg:
   dropout: float = 0.0
   terrain_height: int = 21
   terrain_width: int = 33
-  terrain_feature_dim: int = 23
-  proprio_dim: int = 31
+  terrain_feature_dim: int = 48
+  proprio_dim: int = 28
 
   # Rectified flow.  Model time input is scaled before sinusoidal embedding;
   # ODE integration itself always uses normalized t in [0, 1].

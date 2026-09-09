@@ -28,7 +28,7 @@
 **/.neptune/*
 docker/artifacts/
 *.tmp
-
+*.stl
 # Nohup output
 nohup_*
 *.stl

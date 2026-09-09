@@ -25,6 +25,14 @@ def bad_anchor_pos_z_only(env: ManagerBasedRLEnv, command_name: str, threshold: 
     return torch.abs(command.anchor_pos_w[:, -1] - command.robot_anchor_pos_w[:, -1]) > threshold
 
 
+def bad_anchor_pos_xy_only(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
+    """Terminate when the robot loses the generated horizontal world trajectory."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return torch.linalg.vector_norm(
+        command.anchor_pos_w[:, :2] - command.robot_anchor_pos_w[:, :2], dim=-1
+    ) > threshold
+
+
 def bad_anchor_ori(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, command_name: str, threshold: float
 ) -> torch.Tensor:

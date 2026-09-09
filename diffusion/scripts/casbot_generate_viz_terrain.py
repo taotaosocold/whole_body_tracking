@@ -92,6 +92,7 @@ GRID_X = 33
 GRID_Y = 21
 TERRAIN_DIM = GRID_X * GRID_Y
 CENTER_IDX = (GRID_X // 2) * GRID_Y + GRID_Y // 2
+TERRAIN_GRID_LAYOUT = "x_ascending_y_ascending"
 
 _DEFAULT_MODEL = str(
   Path(__file__).resolve().parents[1]
@@ -195,6 +196,76 @@ def _window_to_ee_trajectories(
   return ee_offset_w + pelvis_pos_w[:, None, :]
 
 
+def _decode_history_trajectory(
+  history_root: np.ndarray,
+  history_joint: np.ndarray,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  """Decode the visualization-only H0...H_last records.
+
+  H0 stores an absolute waist pose with x/y set to zero. The remaining history
+  frames store root xyz offsets and root orientations in H0's yaw-only heading
+  frame.
+  """
+  root = torch.from_numpy(history_root.astype(np.float32, copy=False))
+  joints = torch.from_numpy(history_joint.astype(np.float32, copy=False))
+  h0_pos = root[0, :3]
+  h0_quat = _rot6d_to_quat(root[0, 3:9])
+  h0_yaw = yaw_quat(h0_quat[None]).squeeze(0)
+  positions = [h0_pos]
+  rotations = [h0_quat]
+  for index in range(1, root.shape[0]):
+    positions.append(h0_pos + quat_apply(h0_yaw, root[index, :3]))
+    rotations.append(quat_mul(h0_yaw, _rot6d_to_quat(root[index, 3:9])))
+  return torch.stack(positions), torch.stack(rotations), joints
+
+
+def _quat_slerp(q0: torch.Tensor, q1: torch.Tensor, alpha: float) -> torch.Tensor:
+  """Shortest-path SLERP for one wxyz quaternion pair."""
+  q0 = torch.nn.functional.normalize(q0, dim=-1)
+  q1 = torch.nn.functional.normalize(q1, dim=-1)
+  dot = torch.sum(q0 * q1)
+  if dot < 0.0:
+    q1 = -q1
+    dot = -dot
+  if dot > 0.9995:
+    return torch.nn.functional.normalize(q0 + alpha * (q1 - q0), dim=-1)
+  theta = torch.acos(torch.clamp(dot, -1.0, 1.0))
+  sin_theta = torch.sin(theta)
+  return (
+    torch.sin((1.0 - alpha) * theta) / sin_theta * q0
+    + torch.sin(alpha * theta) / sin_theta * q1
+  )
+
+
+def _interpolate_sparse_trajectory(
+  h3_pos: torch.Tensor,
+  h3_quat: torch.Tensor,
+  h3_joint: torch.Tensor,
+  key_pos: torch.Tensor,
+  key_quat: torch.Tensor,
+  key_joint: torch.Tensor,
+  key_ee: torch.Tensor,
+  frame_stride: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+  """Expand sparse future keyframes into one trajectory for visualization."""
+  dense_pos, dense_quat, dense_joint, dense_ee = [], [], [], []
+  previous_pos, previous_quat, previous_joint = h3_pos, h3_quat, h3_joint
+  # EE markers are diagnostic only; the exact robot pose comes from root/joints.
+  previous_ee = key_ee[0]
+  for key_index in range(key_pos.shape[0]):
+    for substep in range(1, frame_stride + 1):
+      alpha = substep / float(frame_stride)
+      dense_pos.append(torch.lerp(previous_pos, key_pos[key_index], alpha))
+      dense_quat.append(_quat_slerp(previous_quat, key_quat[key_index], alpha))
+      dense_joint.append(torch.lerp(previous_joint, key_joint[key_index], alpha))
+      dense_ee.append(torch.lerp(previous_ee, key_ee[key_index], alpha))
+    previous_pos = key_pos[key_index]
+    previous_quat = key_quat[key_index]
+    previous_joint = key_joint[key_index]
+    previous_ee = key_ee[key_index]
+  return tuple(torch.stack(values) for values in (dense_pos, dense_quat, dense_joint, dense_ee))
+
+
 # ---------------------------------------------------------------------------
 # Mujoco CasBot helpers
 # ---------------------------------------------------------------------------
@@ -278,7 +349,7 @@ class _CasbotSim:
 class Cfg:
   ckpt_path: str = ""
   """Path to a local SMP diffusion checkpoint .pt file."""
-  data_dir: str = "diffusion/source/conditional_npz"
+  data_dir: str = "diffusion/source/datasets"
   """Directory containing windowed terrain/proprio NPZ files."""
   model_path: str = _DEFAULT_MODEL
   """Path to the floating-base CASBOT MuJoCo XML."""
@@ -308,8 +379,8 @@ def _build_model_and_sampler(
     terrain_dim=cfg["terrain_dim"],
     terrain_height=cfg.get("terrain_height", GRID_Y),
     terrain_width=cfg.get("terrain_width", GRID_X),
-    terrain_feature_dim=cfg.get("terrain_feature_dim", 23),
-    proprio_dim=cfg.get("proprio_dim", 31),
+    terrain_feature_dim=cfg.get("terrain_feature_dim", 48),
+    proprio_dim=cfg.get("proprio_dim", 28),
   ).to(device)
   state = ckpt.get("model_ema") or ckpt["model"]
   model.load_state_dict(state)
@@ -340,17 +411,90 @@ def _quantile_normalize(
 
 def _load_condition_windows(
   data_dir: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-  motions, terrains, proprios = [], [], []
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+  motions, terrains, proprios, history_roots, history_joints = [], [], [], [], []
+  frame_strides: set[int] = set()
+  history_sizes: set[int] = set()
   for path in sorted(Path(data_dir).glob("*.npz")):
     with np.load(path, allow_pickle=False) as data:
       if "motion_windows" in data and "terrain" in data and "proprio" in data:
+        if (
+          "history_root" not in data
+          or "history_joint" not in data
+          or "history_root_layout" not in data
+          or "terrain_grid_layout" not in data
+          or "future_frame_stride" not in data
+        ):
+          raise ValueError(
+            f"{path.name} predates sparse-future visualization metadata; "
+            "re-run diffusion/scripts/height_map_to_npz.py"
+          )
+        history_layout = str(np.asarray(data["history_root_layout"]).item())
+        if history_layout != "h0_abs_waist_pose_history_h0_heading_relative":
+          raise ValueError(
+            f"{path.name}: unsupported history_root_layout={history_layout!r}"
+          )
+        terrain_grid_layout = str(np.asarray(data["terrain_grid_layout"]).item())
+        if terrain_grid_layout != TERRAIN_GRID_LAYOUT:
+          raise ValueError(
+            f"{path.name}: unsupported terrain_grid_layout={terrain_grid_layout!r}; "
+            "re-run diffusion/scripts/height_map_to_npz.py"
+          )
         motions.append(data["motion_windows"].astype(np.float32))
         terrains.append(data["terrain"].astype(np.float32))
         proprios.append(data["proprio"].astype(np.float32))
+        motion = data["motion_windows"]
+        terrain = data["terrain"]
+        proprio = data["proprio"]
+        history_root = data["history_root"]
+        history_joint = data["history_joint"]
+        if (
+          history_root.ndim != 3
+          or history_root.shape[0] != motion.shape[0]
+          or history_root.shape[2] != 9
+        ):
+          raise ValueError(
+            f"{path.name}: history_root has shape {history_root.shape}; "
+            "expected (N,H,9) with the same N as motion_windows"
+          )
+        history_size = int(history_root.shape[1])
+        if (
+          history_joint.ndim != 3
+          or history_joint.shape[:2] != (motion.shape[0], history_size)
+          or history_joint.shape[2] != NUM_JOINTS
+        ):
+          raise ValueError(
+            f"{path.name}: history_joint has shape {history_joint.shape}; "
+            f"expected (N,{history_size},{NUM_JOINTS})"
+          )
+        if terrain.ndim != 3 or terrain.shape[:2] != (motion.shape[0], history_size):
+          raise ValueError(
+            f"{path.name}: terrain has shape {terrain.shape}; "
+            f"expected (N,{history_size},H)"
+          )
+        if proprio.ndim != 3 or proprio.shape[:2] != (motion.shape[0], history_size):
+          raise ValueError(
+            f"{path.name}: proprio has shape {proprio.shape}; "
+            f"expected (N,{history_size},P)"
+          )
+        history_roots.append(history_root.astype(np.float32))
+        history_joints.append(history_joint.astype(np.float32))
+        history_sizes.add(history_size)
+        frame_strides.add(int(np.asarray(data["future_frame_stride"]).reshape(-1)[0]))
   if not terrains:
     raise FileNotFoundError(f"No conditional NPZ files found in {data_dir}")
-  return np.concatenate(motions), np.concatenate(terrains), np.concatenate(proprios)
+  if len(frame_strides) != 1:
+    raise ValueError(f"Mixed future_frame_stride values in {data_dir}: {sorted(frame_strides)}")
+  if len(history_sizes) != 1:
+    raise ValueError(f"Mixed history_size values in {data_dir}: {sorted(history_sizes)}")
+  return (
+    np.concatenate(motions),
+    np.concatenate(terrains),
+    np.concatenate(proprios),
+    np.concatenate(history_roots),
+    np.concatenate(history_joints),
+    frame_strides.pop(),
+  )
 
 
 def _set_velocity_command(
@@ -358,7 +502,7 @@ def _set_velocity_command(
 ) -> np.ndarray:
   """Replace the repeated joystick-style command; preserve measured history."""
   result = proprio.copy()
-  result[:, 28:31] = np.asarray([vx, vy, wz], dtype=np.float32)
+  result[:, 25:28] = np.asarray([vx, vy, wz], dtype=np.float32)
   return result
 
 
@@ -419,6 +563,22 @@ def main(cfg: Cfg) -> None:
       f"This visualizer expects the CASBOT (Q=10,F=80) checkpoint; "
       f"got W={window_size}, F={feature_dim}"
     )
+  if ckpt["cfg"].get("diffusion_format_version") != 7:
+    raise ValueError(
+      "This visualizer expects a format-v7 checkpoint; retrain after "
+      "removing historical root velocity."
+    )
+  if ckpt["cfg"].get("proprio_layout") != "joint_pos,velocity_command_local":
+    raise ValueError(
+      "This visualizer expects the new proprio layout "
+      "'joint_pos,velocity_command_local'; retrain the checkpoint after "
+      "removing historical root velocity."
+    )
+  if int(ckpt["cfg"].get("proprio_dim", 28)) != 28:
+    raise ValueError(
+      f"This visualizer expects proprio_dim=28, got "
+      f"{ckpt['cfg'].get('proprio_dim')}"
+    )
   print(
     f"  feature_dim={feature_dim}  window_size={window_size}  "
     f"method={ckpt['cfg'].get('generative_method', 'ddpm')}  "
@@ -440,7 +600,31 @@ def main(cfg: Cfg) -> None:
     f"quat_wxyz={np.array2string(anchor_pelvis_quat, precision=5)}"
   )
 
-  all_motions, all_terrains, all_proprios = _load_condition_windows(cfg.data_dir)
+  (
+    all_motions,
+    all_terrains,
+    all_proprios,
+    all_history_roots,
+    all_history_joints,
+    future_frame_stride,
+  ) = (
+    _load_condition_windows(cfg.data_dir)
+  )
+  # The checkpoint and dataset must use the same temporal target spacing.
+  checkpoint_stride = int(ckpt["cfg"].get("future_frame_stride", 1))
+  if checkpoint_stride != future_frame_stride:
+    raise ValueError(
+      f"Checkpoint future_frame_stride={checkpoint_stride} but dataset uses "
+      f"{future_frame_stride}"
+    )
+  checkpoint_grid_layout = ckpt["cfg"].get("terrain_grid_layout")
+  if checkpoint_grid_layout != TERRAIN_GRID_LAYOUT:
+    print(
+      "[WARN] This checkpoint predates canonical terrain-grid ordering; "
+      "retrain Flow Matching/DDPM on the regenerated datasets for correct "
+      f"terrain conditioning (checkpoint={checkpoint_grid_layout!r}, "
+      f"required={TERRAIN_GRID_LAYOUT!r})."
+    )
   terrain_index = {"value": 0}
   print(f"Loaded {len(all_terrains)} condition windows from {cfg.data_dir}")
 
@@ -448,9 +632,15 @@ def main(cfg: Cfg) -> None:
     terrain_raw: np.ndarray,
     proprio_raw: np.ndarray,
     actual_motion: np.ndarray,
+    history_root: np.ndarray,
+    history_joint: np.ndarray,
   ) -> tuple:
     terrain_tensor = torch.from_numpy(terrain_raw[None]).to(device)
     proprio_tensor = torch.from_numpy(proprio_raw[None]).to(device)
+    history_pos, history_quat, history_joint_tensor = _decode_history_trajectory(
+      history_root, history_joint
+    )
+    h0_pos, h0_quat = history_pos[0], history_quat[0]
     pred_denorm = _run_generate(
       model,
       scheduler,
@@ -469,50 +659,75 @@ def main(cfg: Cfg) -> None:
     )
     generated_f0 = pred_denorm[0].numpy()
     actual_f0 = np.asarray(actual_motion[0], dtype=np.float32)
-    command = np.asarray(proprio_raw[-1, 28:31], dtype=np.float32)
+    command = np.asarray(proprio_raw[-1, 25:28], dtype=np.float32)
     # Motion layout: root lin vel is [74:77], root ang vel is [77:80].
     generated_velocity = generated_f0[[74, 75, 79]]
     actual_velocity = actual_f0[[74, 75, 79]]
+    history_last = history_root.shape[0] - 1
     print(
       "[FlowSample] "
-      f"command_H3_local[vx,vy,wz]={np.array2string(command, precision=4)} | "
-      f"generated_F0_H0_local={np.array2string(generated_velocity, precision=4)} | "
-      f"actual_F0_H0_local={np.array2string(actual_velocity, precision=4)}",
+      f"command_H{history_last}_local[vx,vy,wz]={np.array2string(command, precision=4)} | "
+      f"generated_H{history_last}+{future_frame_stride}_H0_local="
+      f"{np.array2string(generated_velocity, precision=4)} | "
+      f"actual_H{history_last}+{future_frame_stride}_H0_local="
+      f"{np.array2string(actual_velocity, precision=4)}",
       flush=True,
     )
     p_pos, p_quat, p_joint = _window_to_pelvis_trajectory(
       pred_denorm,
-      torch.from_numpy(anchor_pelvis_pos),
-      torch.from_numpy(anchor_pelvis_quat),
+      h0_pos,
+      h0_quat,
     )
-    ee_pos = _window_to_ee_trajectories(
-      pred_denorm, p_pos, torch.from_numpy(anchor_pelvis_quat)
+    key_ee_pos = _window_to_ee_trajectories(
+      pred_denorm, p_pos, h0_quat
     )
+    # Interpolate from the last recorded history pose to the first generated
+    # keyframe, then through all generated keyframes. With the new 10 Hz
+    # dataset and stride=1 this produces the ten contiguous future frames;
+    # with the older stride=5 dataset it produces the dense F0...F49 view.
+    h3_pos, h3_quat, h3_joint = (
+      history_pos[-1], history_quat[-1], history_joint_tensor[-1]
+    )
+    terrain_center_h3 = h3_pos[2] - torch.as_tensor(
+      terrain_raw[-1, CENTER_IDX], dtype=h3_pos.dtype, device=h3_pos.device
+    )
+    print(
+      "[VizFrame] "
+      f"H0_root_xyz={np.array2string(h0_pos.numpy(), precision=4)} "
+      f"H0_root_quat_wxyz={np.array2string(h0_quat.numpy(), precision=4)} "
+      f"H{history_pos.shape[0] - 1}_terrain_center_z={float(terrain_center_h3):.4f}",
+      flush=True,
+    )
+    p_pos, p_quat, p_joint, _dense_ee = _interpolate_sparse_trajectory(
+      h3_pos, h3_quat, h3_joint,
+      p_pos, p_quat, p_joint, key_ee_pos, future_frame_stride,
+    )
+    all_pos = torch.cat((history_pos, p_pos), dim=0)
+    all_quat = torch.cat((history_quat, p_quat), dim=0)
+    all_joint = torch.cat((history_joint_tensor, p_joint), dim=0)
     return (
-      p_pos.cpu().numpy(),
-      p_quat.cpu().numpy(),
-      p_joint.cpu().numpy(),
-      ee_pos.cpu().numpy(),
+      all_pos.numpy(),
+      all_quat.numpy(),
+      all_joint.numpy(),
       terrain_raw,
+      h3_pos.cpu().numpy(),
+      h3_quat.cpu().numpy(),
     )
 
   initial_proprio = _set_velocity_command(
     all_proprios[0], cfg.command_vx, cfg.command_vy, cfg.command_wz
   )
   state: dict = {
-    "pred": run(all_terrains[0], initial_proprio, all_motions[0])
+    "pred": run(
+      all_terrains[0], initial_proprio, all_motions[0],
+      all_history_roots[0], all_history_joints[0]
+    )
   }
 
   server = viser.ViserServer()
   viser_scene = MjlabViserScene(server, sim.model, num_envs=1)
   viser_scene.debug_visualization_enabled = True
 
-  ee_points = server.scene.add_point_cloud(
-    name="/fixed_bodies/predicted_ee_positions",
-    points=np.zeros((NUM_EE, 3), dtype=np.float32),
-    colors=np.tile(np.array([255, 80, 0], dtype=np.uint8), (NUM_EE, 1)),
-    point_size=0.03,
-  )
   terrain_points = server.scene.add_point_cloud(
     name="/terrain/height_map",
     points=np.zeros((TERRAIN_DIM, 3), dtype=np.float32),
@@ -520,13 +735,24 @@ def main(cfg: Cfg) -> None:
     point_size=0.012,
   )
 
+  # The visualizer shows all history frames followed by the interpolated future
+  # frames.  ``history_root`` belongs to the nested ``run`` callback, so it
+  # is not available in this scope; derive the frame count from the loaded
+  # auxiliary metadata instead.
+  history_size = int(all_history_roots.shape[1])
+  total_visual_frames = history_size + window_size * future_frame_stride
+
   with server.gui.add_folder("Generate"):
     frame_slider = server.gui.add_slider(
-      "Frame", min=0, max=window_size - 1, step=1, initial_value=0
+      f"Frame (H0-H{history_size - 1}, future)",
+      min=0,
+      max=total_visual_frames - 1,
+      step=1,
+      initial_value=0,
     )
     play_btn = server.gui.add_button("Play / Pause")
     resample_btn = server.gui.add_button("Resample")
-    next_terrain_btn = server.gui.add_button("Next Terrain")
+    reset_velocity_btn = server.gui.add_button("Reset Velocity")
     vx_slider = server.gui.add_slider(
       "command vx (m/s)", min=-1.5, max=2.0, step=0.05, initial_value=cfg.command_vx
     )
@@ -550,19 +776,26 @@ def main(cfg: Cfg) -> None:
     proprio = _set_velocity_command(
       all_proprios[idx], vx_slider.value, vy_slider.value, wz_slider.value
     )
-    state["pred"] = run(all_terrains[idx], proprio, all_motions[idx])
+    state["pred"] = run(
+      all_terrains[idx], proprio, all_motions[idx],
+      all_history_roots[idx], all_history_joints[idx]
+    )
 
-  @next_terrain_btn.on_click
+  @reset_velocity_btn.on_click
   def _(_evt) -> None:
-    terrain_index["value"] = (terrain_index["value"] + 1) % len(all_terrains)
+    # Keep the currently selected history/terrain window and regenerate only
+    # with the command currently shown by the velocity sliders.
     idx = terrain_index["value"]
-    vx_slider.value = float(all_proprios[idx, -1, 28])
-    vy_slider.value = float(all_proprios[idx, -1, 29])
-    wz_slider.value = float(all_proprios[idx, -1, 30])
-    state["pred"] = run(all_terrains[idx], all_proprios[idx], all_motions[idx])
+    proprio = _set_velocity_command(
+      all_proprios[idx], vx_slider.value, vy_slider.value, wz_slider.value
+    )
+    state["pred"] = run(
+      all_terrains[idx], proprio, all_motions[idx],
+      all_history_roots[idx], all_history_joints[idx]
+    )
 
   def render(frame: int) -> None:
-    p_pos, p_quat, p_joint, ee_pos, terrain = state["pred"]
+    p_pos, p_quat, p_joint, terrain, terrain_anchor_pos, terrain_anchor_quat = state["pred"]
     sim.write_pose(p_pos[frame], p_quat[frame], p_joint[frame])
     viser_scene.update_from_arrays(
 	      body_xpos=np.asarray(sim.data.xpos).reshape(1, -1, 3),
@@ -570,26 +803,45 @@ def main(cfg: Cfg) -> None:
 	      qpos=np.asarray(sim.data.qpos)[None],
       env_idx=0,
     )
-    ee_points.points = ee_pos[frame]
-    # Training stores clearance = waist_z - terrain_z.  Display the sampled
-    # history terrain relative to its center point, so the terrain directly
-    # below the fourth (latest) history waist is exactly z=0:
-    # terrain_i - terrain_center = clearance_center - clearance_i.
+    # Training stores clearance = waist_z - terrain_z in each history scan frame.
     gx, gy = np.meshgrid(
       np.linspace(-0.8, 0.8, GRID_X, dtype=np.float32),
-      np.linspace(0.5, -0.5, GRID_Y, dtype=np.float32),
+      np.linspace(-0.5, 0.5, GRID_Y, dtype=np.float32),
       indexing="xy",
     )
     local_xy = np.stack([gx.ravel(), gy.ravel()], axis=-1)
-    w, x, y, z = p_quat[frame]
+    # Historical scans belong to their corresponding history root pose. The
+    # future scan is held fixed at the last history frame because no future
+    # terrain is predicted.
+    if frame < terrain.shape[0]:
+      terrain_frame_pos = p_pos[frame]
+      terrain_frame_quat = p_quat[frame]
+      clearance = terrain[frame]
+    else:
+      terrain_frame_pos = terrain_anchor_pos
+      terrain_frame_quat = terrain_anchor_quat
+      clearance = terrain[-1]
+    w, x, y, z = terrain_frame_quat
     yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
     cy, sy = np.cos(yaw), np.sin(yaw)
     world_xy = np.empty_like(local_xy)
-    world_xy[:, 0] = local_xy[:, 0] * cy - local_xy[:, 1] * sy + p_pos[frame, 0]
-    world_xy[:, 1] = local_xy[:, 0] * sy + local_xy[:, 1] * cy + p_pos[frame, 1]
-    clearance = terrain[-1]
-    terrain_z = clearance[CENTER_IDX] - clearance
-    terrain_points.points = np.column_stack([world_xy, terrain_z])
+    world_xy[:, 0] = (
+      local_xy[:, 0] * cy - local_xy[:, 1] * sy + terrain_frame_pos[0]
+    )
+    world_xy[:, 1] = (
+      local_xy[:, 0] * sy + local_xy[:, 1] * cy + terrain_frame_pos[1]
+    )
+    # Each scan value is waist_z - terrain_z.  Recover world terrain heights
+    # from the corresponding historical root or fixed H3 future root.
+    terrain_z = terrain_frame_pos[2] - clearance
+    terrain_world_points = np.column_stack([world_xy, terrain_z])
+    # ``MjlabViserScene`` applies its camera-tracking offset to all MuJoCo
+    # body meshes.  The point cloud is a separate Viser object, so it does not
+    # inherit that transform automatically.  Apply the same offset here;
+    # otherwise the robot follows the camera while the terrain remains in the
+    # original world frame and appears artificially close to the waist.
+    scene_offset = np.asarray(viser_scene._scene_offset, dtype=np.float32)
+    terrain_points.points = terrain_world_points + scene_offset[None, :]
     viser_scene.refresh_visualization()
 
   print("Viser server running. Open the printed URL in a browser.")
@@ -598,7 +850,7 @@ def main(cfg: Cfg) -> None:
     while True:
       render(int(frame_slider.value))
       if playing["v"]:
-        nxt = (int(frame_slider.value) + 1) % window_size
+        nxt = (int(frame_slider.value) + 1) % total_visual_frames
         frame_slider.value = nxt
       time.sleep(dt_play)
   except KeyboardInterrupt:

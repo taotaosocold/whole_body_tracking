@@ -65,8 +65,8 @@ def _build_model(checkpoint: dict[str, Any], use_ema: bool) -> DiffusionDenoiser
     terrain_dim=int(terrain_dim),
     terrain_height=int(cfg.get("terrain_height", 21)),
     terrain_width=int(cfg.get("terrain_width", 33)),
-    terrain_feature_dim=int(cfg.get("terrain_feature_dim", 23)),
-    proprio_dim=int(cfg.get("proprio_dim", 31)),
+    terrain_feature_dim=int(cfg.get("terrain_feature_dim", 48)),
+    proprio_dim=int(cfg.get("proprio_dim", 28)),
   )
   state_key = "model_ema" if use_ema else "model"
   if state_key not in checkpoint:
@@ -85,8 +85,8 @@ def _export_onnx(
   window = int(cfg["window_size"])
   feature_dim = int(cfg["feature_dim"])
   terrain_dim = int(cfg["terrain_dim"])
-  proprio_dim = int(cfg.get("proprio_dim", 31))
-  history = int(cfg.get("history_size", 4))
+  proprio_dim = int(cfg.get("proprio_dim", 28))
+  history = int(cfg.get("history_size", 2))
   method = str(cfg.get("generative_method", "ddpm"))
   inputs = (
     torch.randn(batch, window, feature_dim, dtype=torch.float32),
@@ -115,14 +115,16 @@ def _validate_coordinate_semantics(cfg: dict[str, Any]) -> tuple[str, str, str, 
   proprio_layout = cfg.get("proprio_layout")
   joint_layout = cfg.get("joint_layout")
   if (
+    cfg.get("diffusion_format_version") != 7
+    or
     root_body != "waist_yaw_link"
     or terrain_layout != "root_z_minus_terrain_z"
     or motion_layout != "future_h0_heading_root_xyz_offset"
-    or proprio_layout != "joint_pos,root_velocity_local,velocity_command_local"
+    or proprio_layout != "joint_pos,velocity_command_local"
     or joint_layout != "isaaclab_articulation"
   ):
     raise ValueError(
-      "Checkpoint lacks the required format-v6 velocity-command semantics: "
+      "Checkpoint lacks the required format-v7 velocity-command semantics: "
       f"root_body={root_body!r}, terrain_layout={terrain_layout!r}, "
       f"motion_layout={motion_layout!r}, proprio_layout={proprio_layout!r}, "
       f"joint_layout={joint_layout!r}. "
@@ -146,14 +148,15 @@ def _embed_metadata(
   model = onnx.load(str(onnx_path), load_external_data=True)
   method = str(cfg.get("generative_method", "ddpm"))
   metadata = {
-    "diffusion.format_version": "6",
+    "diffusion.format_version": "7",
     "diffusion.generative_method": method,
     "diffusion.window_size": str(int(cfg["window_size"])),
     "diffusion.feature_dim": str(int(cfg["feature_dim"])),
     "diffusion.terrain_dim": str(int(cfg["terrain_dim"])),
-    "diffusion.proprio_dim": str(int(cfg.get("proprio_dim", 31))),
-    "diffusion.history_size": str(int(cfg.get("history_size", 4))),
+    "diffusion.proprio_dim": str(int(cfg.get("proprio_dim", 28))),
+    "diffusion.history_size": str(int(cfg.get("history_size", 2))),
     "diffusion.future_size": str(int(cfg.get("future_size", cfg["window_size"]))),
+    "diffusion.future_frame_stride": str(int(cfg.get("future_frame_stride", 1))),
     "diffusion.proprio_layout": proprio_layout,
     "diffusion.root_body": str(root_body),
     "diffusion.terrain_layout": str(terrain_layout),

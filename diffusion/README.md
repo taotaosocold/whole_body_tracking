@@ -1,6 +1,6 @@
 # CASBOT conditional motion generation
 
-The DDPM and Flow Matching paths share the same conditional dataset and model. The input is four historical frames of terrain/proprioception, and the output is ten future motion frames. Each historical proprioceptive token contains 25 joint positions, that frame's measured root velocity `[vx, vy, wz]` in its own yaw frame, and the repeated desired velocity command `[vx, vy, wz]` in the current H3 yaw frame.
+The DDPM and Flow Matching paths share the same conditional dataset and model. The current 10 Hz input uses two historical frames of terrain/proprioception and outputs ten future motion frames. Each historical proprioceptive token contains 25 joint positions and the repeated desired velocity command `[vx, vy, wz]`; historical measured root velocity is intentionally omitted. Each 33×21 (693-D) terrain scan is encoded by the CNN into a 48-D feature before cross-attention.
 
 Run commands from the `whole_body_tracking` repository root in the `smp` environment.
 
@@ -9,12 +9,12 @@ Run commands from the `whole_body_tracking` repository root in the `smp` environ
 ```bash
 conda activate smp
 python diffusion/scripts/height_map_to_npz.py \
-  --input-dir source/whole_body_tracking/whole_body_tracking/tasks/parkour/config/casbot_02/motion_with_height_map \
+  --input-dir diffusion/source/data \
   --output-dir diffusion/source/datasets
 ```
 
 This preprocessing is shared by both methods and only needs to be repeated when the source motions or feature format change.
-Format v6 replaces the old target-heading condition, so old processed NPZ files and old checkpoints are intentionally incompatible.
+Format v7 removes historical measured root velocity from proprioception and expands the terrain CNN feature to 48 dimensions, so old processed NPZ files and old checkpoints are intentionally incompatible.
 
 ## Train DDPM
 

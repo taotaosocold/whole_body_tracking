@@ -10,9 +10,9 @@ Example:
 .. code-block:: bash
 
     python scripts/casbot_replay_npz_with_height_map.py \
-        --motion_file /home/casbot/Desktop/whole_body_tracking/source/whole_body_tracking/whole_body_tracking/tasks/parkour/config/casbot_02/motion_walk/walking.npz \
-        --terrain_file /home/casbot/Desktop/whole_body_tracking/source/whole_body_tracking/whole_body_tracking/tasks/parkour/config/casbot_02/STL_motion/flat_placeholder.stl \
-        --output /home/casbot/Desktop/whole_body_tracking/source/whole_body_tracking/whole_body_tracking/tasks/parkour/config/casbot_02/motion_walk/walking_with_height_map.npz \
+        --motion_file /home/casbot/Desktop/whole_body_tracking/source/whole_body_tracking/whole_body_tracking/tasks/parkour/config/casbot_02/motion/stairs_up_slow2_M.npz \
+        --terrain_file /home/casbot/Desktop/whole_body_tracking/source/whole_body_tracking/whole_body_tracking/tasks/parkour/config/casbot_02/STL_motion/stairs_up_slow2_M.stl \
+        --output /home/casbot/Desktop/whole_body_tracking/source/whole_body_tracking/whole_body_tracking/tasks/parkour/config/casbot_02/motion_with_height_map/stairs_up_slow2_M_with_height_map.npz \
         --headless
 """
 

@@ -110,6 +110,7 @@ def _save_checkpoint(
     "cfg": {
       **vars(cfg),
       "generative_method": "flow_matching",
+      "diffusion_format_version": 7,
       "feature_dim": feature_dim,
       "window_size": dataset.window_size,
     },
@@ -123,8 +124,10 @@ def _save_checkpoint(
     data["cfg"]["proprio_dim"] = dataset.proprio_dim  # type: ignore[attr-defined]
     data["cfg"]["history_size"] = dataset.terrains.shape[1]  # type: ignore[attr-defined]
     data["cfg"]["future_size"] = dataset.window_size  # type: ignore[attr-defined]
+    data["cfg"]["future_frame_stride"] = dataset.future_frame_stride  # type: ignore[attr-defined]
     data["cfg"]["root_body"] = dataset.root_body  # type: ignore[attr-defined]
     data["cfg"]["terrain_layout"] = dataset.terrain_layout  # type: ignore[attr-defined]
+    data["cfg"]["terrain_grid_layout"] = dataset.terrain_grid_layout  # type: ignore[attr-defined]
     data["cfg"]["motion_layout"] = dataset.motion_layout  # type: ignore[attr-defined]
     data["cfg"]["proprio_layout"] = dataset.proprio_layout  # type: ignore[attr-defined]
     data["cfg"]["joint_layout"] = dataset.joint_layout  # type: ignore[attr-defined]
